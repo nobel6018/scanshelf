@@ -7,7 +7,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.3.1"
+    MARKETING_VERSION: "0.3.2"
     CURRENT_PROJECT_VERSION: "1"
     # AltStore가 설치할 때 무료 Apple ID로 다시 서명한다. 빌드 단계에서는 서명하지 않는다
     CODE_SIGNING_ALLOWED: "NO"
