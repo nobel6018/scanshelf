@@ -79,6 +79,65 @@ pub fn page_checks(cache: &Path, document_id: &str) -> HashMap<Uuid, Vec<steps::
     load_state(cache, document_id).pages.into_iter().map(|(id, s)| (id, s.checks)).collect()
 }
 
+/// 테두리 바로 옆(왼쪽이나 오른쪽)에 다른 페이지가 보이는지. 펼침인데 한 쪽만 잡힌 장(어두운 표지 옆 흰 면)과
+/// 펼침 배치로 찍은 낱장 전단을 가른다. 사진 가장자리 띠의 색을 책상으로 보고, 테두리 옆 띠가 책상과 다른 색이면 페이지가 있다.
+/// 2026-11-08: 로보월드_4 낱장 전단 6장이 "한 쪽만 잡힘"으로 잘못 표시됐다
+fn page_beside(image: &RgbImage, quad: &Quad) -> bool {
+    let small = image::imageops::thumbnail(image, 600, (600 * image.height() / image.width().max(1)).max(1));
+    let (w, h) = (small.width() as f64, small.height() as f64);
+    let px = |x: f64, y: f64| small.get_pixel((x.clamp(0.0, w - 1.0)) as u32, (y.clamp(0.0, h - 1.0)) as u32).0;
+    // 책상: 사진 바깥 3% 띠의 채널별 중앙값
+    let mut ring: [Vec<u8>; 3] = Default::default();
+    let band = (w.min(h) * 0.03).max(2.0);
+    for y in (0..h as u32).step_by(2) {
+        for x in (0..w as u32).step_by(2) {
+            let (fx, fy) = (x as f64, y as f64);
+            if fx < band || fy < band || fx > w - band || fy > h - band {
+                let p = px(fx, fy);
+                (0..3).for_each(|c| ring[c].push(p[c]));
+            }
+        }
+    }
+    let desk: [f64; 3] = std::array::from_fn(|c| {
+        let v = &mut ring[c];
+        v.sort_unstable();
+        v.get(v.len() / 2).copied().unwrap_or(0) as f64
+    });
+    let left = (quad.top_left.x.min(quad.bottom_left.x)) * w;
+    let right = (quad.top_right.x.max(quad.bottom_right.x)) * w;
+    let top = quad.top_left.y.max(quad.top_right.y) * h;
+    let bottom = quad.bottom_left.y.min(quad.bottom_right.y) * h;
+    let width = right - left;
+    let (y0, y1) = (top + (bottom - top) * 0.15, bottom - (bottom - top) * 0.15);
+    // 띠 하나: 테두리에서 폭의 5%~35% 떨어진 곳. 사진 밖으로 나가면 볼 수 없다
+    let strip = |from: f64, to: f64| -> Option<f64> {
+        let (a, b) = (from.min(to).max(0.0), from.max(to).min(w - 1.0));
+        if b - a < width * 0.1 || y1 <= y0 {
+            return None;
+        }
+        // 줄마다 책상과 다른 색이 절반 넘는지. 페이지는 위아래 전체에 걸치고, 손이나 그림자는 일부 줄에만 걸친다
+        let (mut page_rows, mut rows) = (0usize, 0usize);
+        let mut y = y0;
+        while y < y1 {
+            let (mut differ, mut total) = (0usize, 0usize);
+            let mut x = a;
+            while x < b {
+                let p = px(x, y);
+                let d: f64 = (0..3).map(|c| (p[c] as f64 - desk[c]).abs()).sum();
+                differ += usize::from(d > 60.0);
+                total += 1;
+                x += 2.0;
+            }
+            page_rows += usize::from(differ * 2 > total);
+            rows += 1;
+            y += 2.0;
+        }
+        Some(page_rows as f64 / rows.max(1) as f64)
+    };
+    let sides = [strip(left - width * 0.35, left - width * 0.05), strip(right + width * 0.05, right + width * 0.35)];
+    sides.into_iter().flatten().any(|f| f > 0.85)
+}
+
 /// 이 페이지에 쓸 처리 옵션. 사람이 페이지마다 고른 필터가 문서 설정보다 먼저다
 fn page_options(defaults: &ProcessOptions, edits: &Edits, page: Uuid) -> ProcessOptions {
     let mut options = *defaults;
@@ -289,6 +348,7 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
                 // 글자 방향이 의심스러우면 문서 다수 방향도 따르지 않는다. 그 페이지 글자가 바로 섰다고 읽혔기 때문이다
                 if reading.doubtful { Some(0) } else { reading.rotation.or(document_turn) }
             };
+            let beside = quad.is_some_and(|q| page_beside(&image, &q));
             let corrected = steps::correct_page(steps::CorrectInput {
                 image,
                 quad,
@@ -309,7 +369,9 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
                 corrected
                     .checks
                     .into_iter()
-                    .filter(|c| !(cover && matches!(c, steps::PageCheck::QuadOnePage | steps::PageCheck::NotSplit))),
+                    .filter(|c| !(cover && matches!(c, steps::PageCheck::QuadOnePage | steps::PageCheck::NotSplit)))
+                    // 옆에 다른 페이지가 안 보이면 펼침 배치로 찍은 낱장이다
+                    .filter(|c| beside || *c != steps::PageCheck::QuadOnePage),
             );
             let mut page_outputs = Vec::new();
             for (part, image) in corrected.parts {
@@ -494,3 +556,46 @@ mod quad_choice_tests {
     }
 }
 
+
+#[cfg(test)]
+mod beside_tests {
+    use super::page_beside;
+    use image::{Rgb, RgbImage};
+    use scanshelf_core::{Point, Quad};
+
+    fn quad(l: f64, t: f64, r: f64, b: f64) -> Quad {
+        Quad {
+            top_left: Point { x: l, y: t },
+            top_right: Point { x: r, y: t },
+            bottom_right: Point { x: r, y: b },
+            bottom_left: Point { x: l, y: b },
+        }
+    }
+
+    /// 베이지 책상 위 흰 종이(오른쪽 면). 왼쪽 면은 어두운 표지이거나 없다
+    fn desk(dark_left_page: bool, hand: bool) -> RgbImage {
+        RgbImage::from_fn(600, 800, |x, y| {
+            let right_page = (300..520).contains(&x) && (200..600).contains(&y);
+            let left_page = dark_left_page && (80..300).contains(&x) && (200..600).contains(&y);
+            let glove = hand && (230..300).contains(&x) && (380..450).contains(&y);
+            if right_page || glove {
+                Rgb([245, 245, 245])
+            } else if left_page {
+                Rgb([30, 30, 32])
+            } else {
+                Rgb([220, 205, 185])
+            }
+        })
+    }
+
+    #[test]
+    fn 옆에_어두운_표지가_있으면_한_쪽만_잡힌_펼침이다() {
+        assert!(page_beside(&desk(true, false), &quad(0.5, 0.25, 0.867, 0.75)));
+    }
+
+    #[test]
+    fn 옆이_책상이면_낱장이다_손이_걸쳐_있어도() {
+        assert!(!page_beside(&desk(false, false), &quad(0.5, 0.25, 0.867, 0.75)));
+        assert!(!page_beside(&desk(false, true), &quad(0.5, 0.25, 0.867, 0.75)));
+    }
+}
