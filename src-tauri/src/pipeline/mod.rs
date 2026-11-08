@@ -536,7 +536,7 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
                 let turn = if reading.doubtful { Some(0) } else { reading.rotation.or(document_turn) };
                 let (w, h) = (image.width() as f32, image.height() as f32);
                 // 세로형 표지(0.7)는 원래 세로다. 펼친 3단 접지가 누운 정도(0.46)로 길쭉할 때만 눕혀 본다
-                let tall_after = |t: u16| if t % 180 == 0 { h > w * LAY_DOWN_RATIO } else { w > h * LAY_DOWN_RATIO };
+                let tall_after = |t: u16| if t.is_multiple_of(180) { h > w * LAY_DOWN_RATIO } else { w > h * LAY_DOWN_RATIO };
                 if lay_down && turn.is_none_or(tall_after) {
                     for t in [90, 270] {
                         let check = crate::ocr::detect_rotation_checked(&crate::ocr::rotate(image, t));
