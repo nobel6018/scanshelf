@@ -9,6 +9,7 @@ mod ask;
 mod book;
 pub mod busy;
 mod calendar;
+pub mod control;
 mod download;
 mod export;
 mod import;
@@ -26,7 +27,7 @@ mod update;
 
 use std::sync::Arc;
 
-use tauri::{Listener, Manager};
+use tauri::{Emitter, Listener, Manager};
 
 pub fn run() {
     tauri::Builder::default()
@@ -95,6 +96,7 @@ pub fn run() {
                     on_change.enqueue(&changed.document_id, false);
                 }
             });
+            start_control(app.handle(), &app_data_dir);
             std::thread::spawn(move || {
                 search::refresh_all(&handle);
                 pipeline.enqueue_stale(&handle);
@@ -161,8 +163,58 @@ pub fn run() {
                     actions::dispatch(app, actions::Action::Import { paths: files });
                 }
             }
+            if let tauri::RunEvent::Exit = &event
+                && let Ok(dir) = app.path().app_data_dir()
+            {
+                control::remove_info(&dir.join(control::CONTROL_FILE));
+            }
             let _ = (app, event);
         });
+}
+
+/// MCP 쓰기 통로(control.rs)를 127.0.0.1에 띄우고 접속 정보를 남긴다. 실패해도 앱은 그대로 쓴다(MCP 쓰기만 안 된다)
+fn start_control(app: &tauri::AppHandle, app_data_dir: &std::path::Path) {
+    struct Events(tauri::AppHandle);
+    impl control::ControlEvents for Events {
+        fn edits_changed(&self, document_id: uuid::Uuid, reprocess: bool) {
+            if reprocess {
+                self.0.state::<pipeline::Pipeline>().enqueue(&document_id.to_string(), false);
+            }
+            let _ = self.0.emit(control::EVENT_EDITS_CHANGED, serde_json::json!({ "documentId": document_id }));
+        }
+        fn tags_changed(&self, document_id: uuid::Uuid) {
+            let payload = serde_json::json!({ "documentId": document_id });
+            let _ = self.0.emit(tagger::EVENT_TAGS_CHANGED, payload.clone());
+            let _ = self.0.emit(control::EVENT_EDITS_CHANGED, payload);
+        }
+    }
+    let (Ok(library), Ok(cache)) = (library::library_dir(app), library::cache_dir(app)) else {
+        return;
+    };
+    let listener = match control::bind_local() {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("MCP 쓰기 통로를 열지 못했다: {error}");
+            return;
+        }
+    };
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let token = transfer::pairing::random_token();
+    let info = control::ControlInfo { port, token: hex::encode(token), pid: std::process::id() };
+    if let Err(error) = control::write_info(&app_data_dir.join(control::CONTROL_FILE), &info) {
+        eprintln!("MCP 쓰기 통로 정보를 쓰지 못했다: {error}");
+        return;
+    }
+    let service = std::sync::Arc::new(control::ControlService { library, cache, token, events: std::sync::Arc::new(Events(app.clone())) });
+    tauri::async_runtime::spawn(async move {
+        let result = match tokio::net::TcpListener::from_std(listener) {
+            Ok(listener) => control::serve(listener, service).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
+            eprintln!("MCP 쓰기 통로가 멈췄다: {error}");
+        }
+    });
 }
 
 /// scanshelf:// 링크. 앱이 떠 있으면 on_open_url로, 링크로 앱을 처음 띄웠으면 get_current로 온다.

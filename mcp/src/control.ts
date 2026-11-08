@@ -1,0 +1,86 @@
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+
+// Mac 앱의 쓰기 통로(src-tauri/src/control.rs) 클라이언트. MCP는 edits.json에 직접 쓰지 않고 앱에 부탁한다.
+// 화면이 edits 전체를 들고 있다가 통째로 저장하므로, 바깥에서 쓴 칸은 앱을 거쳐야 사라지지 않는다
+// @see ../../docs/mcp.md "쓰기 통로"
+
+export const CONTROL_FILE = "control.json";
+
+/** 앱 데이터 폴더(보관함 library/의 부모)의 control.json. SCANSHELF_CONTROL_FILE로 바꿀 수 있다 */
+export function controlFilePath(libraryDir: string): string {
+  return process.env.SCANSHELF_CONTROL_FILE ?? join(dirname(libraryDir), CONTROL_FILE);
+}
+
+/** pipeline/steps.rs PageCheck 중 사람이 볼 것 */
+export type ReviewCheck = "quadMissing" | "quadOnePage" | "notSplit" | "rotationDoubtful";
+
+export interface ReviewDocument {
+  documentId: string;
+  pages: Array<{ pageId: string; checks: ReviewCheck[] }>;
+}
+
+/** 앱이 꺼져 있거나 통로가 없을 때. 메시지를 그대로 사용자에게 보여 준다 */
+export class AppNotRunning extends Error {}
+
+export class ControlError extends Error {}
+
+const APP_OFF =
+  "Mac scanshelf 앱이 켜져 있지 않아 고칠 수 없습니다. 앱을 켠 뒤 다시 시도해 주세요(읽기 도구는 앱 없이도 됩니다).";
+
+export class ControlClient {
+  constructor(
+    private readonly file: string,
+    private readonly fetchImpl: typeof fetch = fetch,
+  ) {}
+
+  private async info(): Promise<{ port: number; token: string }> {
+    let raw: string;
+    try {
+      raw = await readFile(this.file, "utf8");
+    } catch {
+      throw new AppNotRunning(APP_OFF);
+    }
+    const info = JSON.parse(raw) as { port?: unknown; token?: unknown };
+    if (typeof info.port !== "number" || typeof info.token !== "string") throw new AppNotRunning(APP_OFF);
+    return { port: info.port, token: info.token };
+  }
+
+  private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const { port, token } = await this.info();
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`http://127.0.0.1:${port}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      // 앱이 끝나며 파일을 못 지웠으면(강제 종료) 포트가 닫혀 있다
+      throw new AppNotRunning(APP_OFF);
+    }
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    if (response.status === 401) {
+      throw new AppNotRunning("Mac scanshelf 앱이 다시 켜져 접속 정보가 바뀌었습니다. 잠시 뒤 다시 시도해 주세요.");
+    }
+    if (!response.ok) throw new ControlError(payload.error ?? `앱이 요청을 거절했습니다(${response.status})`);
+    return payload as T;
+  }
+
+  async review(): Promise<ReviewDocument[]> {
+    return (await this.call<{ documents: ReviewDocument[] }>("GET", "/v1/review")).documents;
+  }
+
+  async rotate(documentId: string, pageId: string, degrees: 90 | 180 | 270): Promise<number> {
+    return (await this.call<{ rotation: number }>("POST", `/v1/documents/${documentId}/pages/${pageId}/rotate`, { degrees })).rotation;
+  }
+
+  async setReviewed(documentId: string, pageId: string, reviewed: boolean): Promise<void> {
+    await this.call("PUT", `/v1/documents/${documentId}/pages/${pageId}/reviewed`, { reviewed });
+  }
+
+  async updateTags(documentId: string, add: string[], remove: string[]): Promise<string[]> {
+    return (await this.call<{ tags: string[] }>("PATCH", `/v1/documents/${documentId}/tags`, { add, remove })).tags;
+  }
+}

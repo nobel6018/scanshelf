@@ -2,15 +2,15 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, normalize as normalizePath, sep } from "node:path";
 
-// scanshelf 보관함 폴더를 직접 읽는다. 쓰지는 않는다.
+// scanshelf 보관함 폴더를 직접 읽는다. 쓰지는 않는다(쓰기는 Mac 앱에 부탁한다, control.ts).
 // 형식은 crates/scanshelf-core/src/ 와 같아야 한다(lib.rs, overrides.rs, processing.rs, ocr.rs, summary.rs, tags.rs)
 // @see ../../docs/mcp.md
 // @see ../../docs/document-format.md
 
 /** scanshelf-core SCHEMA_VERSION. 이보다 큰 manifest는 읽지 않는다(앱과 같은 규칙) */
 export const SCHEMA_VERSION = 1;
-/** scanshelf-core PIPELINE_VERSION. 이보다 낮은 출력은 다시 처리할 대상이다 */
-export const PIPELINE_VERSION = 1;
+/** scanshelf-core processing.rs PIPELINE_VERSION. 이보다 낮은 출력은 다시 처리할 대상이다. 테스트가 Rust 값과 맞는지 본다 */
+export const PIPELINE_VERSION = 6;
 
 /** Mac 앱 데이터 폴더(Tauri app_data_dir) 아래 library/. SCANSHELF_LIBRARY_DIR로 바꿀 수 있다 */
 export function defaultLibraryDir(): string {
@@ -46,7 +46,11 @@ export interface Edits {
   session?: string | null;
   quads?: Record<string, unknown>;
   layouts?: Record<string, PageLayout>;
+  /** 사람이 더 돌린 각도(시계 방향) */
+  rotations?: Record<string, number>;
   deletedPages?: string[];
+  /** "확인함"을 누른 원본 페이지 */
+  reviewed?: string[];
   tags?: string[];
   tagsByUser?: boolean;
   pageOrder?: string[] | null;
@@ -303,6 +307,30 @@ export async function getOcrText(doc: Doc, ref: PageRef): Promise<string | null>
   if (!page || typeof page.text !== "string") return null;
   ocrCache.set(path, { mtime, text: page.text });
   return page.text;
+}
+
+/** ocr.rs Rect. 그림 기준 0~1, 원점 왼쪽 위 */
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface OcrBlock {
+  kind: "title" | "paragraph" | "list" | "table";
+  text: string;
+  bbox: Rect;
+  lines: Array<{ text: string; bbox: Rect; confidence: number }>;
+}
+
+/** 출력 페이지의 OCR 블록(줄과 위치). 검색과 달리 자주 읽지 않아 캐시하지 않는다 */
+export async function getOcrBlocks(doc: Doc, ref: PageRef): Promise<OcrBlock[] | null> {
+  if (!ref.output.ocr) return null;
+  const path = insideDir(doc.dir, ref.output.ocr);
+  if (!path) return null;
+  const page = await readJson<{ blocks?: unknown }>(path);
+  return page && Array.isArray(page.blocks) ? (page.blocks as OcrBlock[]) : null;
 }
 
 export async function getSummary(doc: Doc): Promise<Summary | null> {

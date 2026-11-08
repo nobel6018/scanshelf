@@ -83,3 +83,40 @@ export function fitJpeg(bytes: Buffer, maxEdge: number, quality = 85): Fitted {
   const data = jpeg.encode({ data: downscale(img.data, img.width, img.height, width, height), width, height }, quality).data;
   return { data, width, height, original, resized: true };
 }
+
+/** 그림 기준 정규화 사각형(0~1, 원점 왼쪽 위). OCR 줄 위치(ocr.rs Rect)와 같은 단위 */
+export interface Region {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** 정규화 영역을 그림 안 픽셀 사각형으로. 그림 밖으로 나간 부분은 잘라 낸다. 남는 것이 없으면 null */
+export function regionPixels(region: Region, width: number, height: number): { x: number; y: number; w: number; h: number } | null {
+  const x0 = Math.max(0, Math.floor(region.x * width));
+  const y0 = Math.max(0, Math.floor(region.y * height));
+  const x1 = Math.min(width, Math.ceil((region.x + region.width) * width));
+  const y1 = Math.min(height, Math.ceil((region.y + region.height) * height));
+  if (x1 - x0 < 1 || y1 - y0 < 1) return null;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+/** 한 부분만 원본 해상도로 잘라 낸다. 잘라 낸 것도 긴 변이 maxEdge를 넘으면 줄인다. 작은 글자를 읽을 때 쓴다 */
+export function cropJpeg(bytes: Buffer, region: Region, maxEdge: number, quality = 90): Fitted & { box: { x: number; y: number; w: number; h: number } } {
+  const img = jpeg.decode(bytes, { useTArray: true, maxResolutionInMP: 200, maxMemoryUsageInMB: 1024 });
+  const original = { width: img.width, height: img.height };
+  const box = regionPixels(region, img.width, img.height);
+  if (!box) throw new Error("영역이 그림 밖이거나 너무 작습니다");
+  const cut = new Uint8Array(box.w * box.h * 4);
+  for (let y = 0; y < box.h; y++) {
+    const from = ((box.y + y) * img.width + box.x) * 4;
+    cut.set(img.data.subarray(from, from + box.w * 4), y * box.w * 4);
+  }
+  const scale = Math.min(1, maxEdge / Math.max(box.w, box.h));
+  const width = Math.max(1, Math.round(box.w * scale));
+  const height = Math.max(1, Math.round(box.h * scale));
+  const pixels = scale < 1 ? downscale(cut, box.w, box.h, width, height) : cut;
+  const data = jpeg.encode({ data: pixels, width, height }, quality).data;
+  return { data, width, height, original, resized: scale < 1, box };
+}

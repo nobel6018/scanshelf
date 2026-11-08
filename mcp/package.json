@@ -1,8 +1,8 @@
 {
   "name": "scanshelf-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "scanshelf로 스캔한 문서를 Claude 같은 MCP 클라이언트에서 찾고 읽는 서버(읽기 전용)",
+  "description": "scanshelf로 스캔한 문서를 Claude 같은 MCP 클라이언트에서 찾고 읽는 서버(쓰기는 Mac 앱에 부탁)",
   "type": "module",
   "bin": {
     "scanshelf-mcp": "dist/index.js"

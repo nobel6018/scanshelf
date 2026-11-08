@@ -109,6 +109,8 @@ export default function App() {
         scheduleRefresh();
       }),
       listen("library-changed", scheduleRefresh),
+      // MCP가 쓰기 통로(src-tauri/src/control.rs)로 돌리기, 확인함, 태그를 바꿨다. 열린 문서 화면이 옛 edits로 덮지 않게 다시 읽는다
+      listen("edits-changed", scheduleRefresh),
       // MCP나 다른 창이 지웠을 수도 있다. 보고 있던 문서면 보관함으로 돌아간다
       listen<{ documentId: string }>("document-deleted", (e) => {
         setRoute((r) => (r.view === "document" && r.id === e.payload.documentId ? { view: "library" } : r));
