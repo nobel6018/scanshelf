@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { registerCommand } from "../shortcuts";
+import { registerCommand, sendCommand } from "../shortcuts";
 import { OriginPanel } from "./OriginPanel";
 import { api, compact, fileUrl, KIND_LABEL } from "../api";
 import type {
@@ -415,6 +415,14 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
               </button>
               <button className="danger" data-shortcut="removePage" onClick={() => deletePage(current.page.id)}>
                 페이지 빼기
+              </button>
+              <button
+                className="secondary"
+                data-shortcut="reprocess"
+                title="이 문서의 모든 페이지를 지금 설정으로 다시 처리합니다"
+                onClick={() => sendCommand("reprocess")}
+              >
+                다시 처리
               </button>
               <span className="spacer" />
               <input

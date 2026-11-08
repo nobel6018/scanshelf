@@ -8,6 +8,7 @@ import {
   isModifierOnly,
   labelFor,
   matchShortcut,
+  isReloadKey,
   onCommand,
   runRegistered,
   SCREEN_LABEL,
@@ -272,9 +273,14 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       // 빠른 찾기 같은 창이 이미 처리한 키
       if (e.defaultPrevented || modalOpen) return;
+      if (isReloadKey(e)) {
+        e.preventDefault();
+        if (screen === "document") setNotice({ text: "⌘R은 쓰지 않습니다. 다시 처리는 ⇧⌘P나 '다시 처리' 단추로 합니다" });
+        return;
+      }
       const shortcut = matchShortcut(e);
       if (!shortcut) return;
-      // 다른 화면 전용 키도 웹뷰 기본 동작(⌘R 새로고침 등)은 막는다
+      // 다른 화면 전용 키도 웹뷰 기본 동작은 막는다
       e.preventDefault();
       if (!availableOn(shortcut, screen)) {
         const where = (shortcut.screens ?? []).map((s) => SCREEN_LABEL[s]).join(", ");

@@ -56,9 +56,10 @@ export const SHORTCUTS: Shortcut[] = [
   { key: ",", mod: true, run: "settings", label: "설정", group: "이동", inInput: true },
   { key: "j", mod: true, run: "openAsk", label: "보관함에 물어보기", group: "이동", inInput: true },
   { key: "o", mod: true, run: "import", label: "그림, PDF 가져오기", group: "파일", inInput: true },
-  // 문서 단위 명령은 문서 화면에서만 동작한다. 보관함 화면에서 ⌘R이 무엇을 다시 처리하는지 알 수 없어서다
+  // 문서 단위 명령은 문서 화면에서만 동작한다. 보관함 화면에서는 무엇을 다시 처리하는지 알 수 없어서다.
+  // 다시 처리는 ⌘R(새로고침으로 손에 익은 키)에서 ⇧⌘P(process)로 옮겼다. 실수로 누르기 쉬웠다(2026-11-08 사용자 지적)
   { key: "e", mod: true, run: "exportPdf", label: "이 문서를 PDF로 내보내기", group: "문서", screens: ["document"] },
-  { key: "r", mod: true, run: "reprocess", label: "이 문서만 다시 처리", group: "문서", screens: ["document"] },
+  { key: "p", mod: true, shift: true, run: "reprocess", label: "이 문서만 다시 처리", group: "문서", screens: ["document"] },
   { key: "Backspace", mod: true, run: "delete", label: "이 문서 휴지통으로 (확인 후)", group: "문서", screens: ["document"] },
   // 문서 화면 도구 막대. 처리는 DocumentView가 registerCommand로 붙인다. 고른 키의 근거는 docs/shortcuts-and-deep-links.md
   { key: "g", mod: true, run: "editQuad", label: "꼭짓점 고치기", group: "문서", screens: ["document"] },
@@ -115,6 +116,12 @@ export function matchShortcut(e: KeyboardEvent): Shortcut | undefined {
 
 export function availableOn(s: Shortcut, screen: Screen): boolean {
   return !s.screens || s.screens.includes(screen);
+}
+
+/** ⌘R. 웹뷰 새로고침이라 아무 일도 하지 않게 막는다(화면이 처음부터 다시 그려져 보던 쪽을 잃는다) */
+export function isReloadKey(e: KeyboardEvent): boolean {
+  const mod = IS_MAC ? e.metaKey : e.ctrlKey;
+  return mod && !e.altKey && e.key.toLowerCase() === "r";
 }
 
 /** ⌘ 하나만 눌렀는지(오버레이를 띄우는 키) */
