@@ -72,7 +72,7 @@ export function LibraryView({ documents, progress, onOpen, onError, onContextMen
     setCsvBusy(session);
     try {
       const result = await api.exportNotionCsv(session);
-      if (result === null) onError("노션 CSV 내보내기는 아직 연결되지 않았습니다");
+      if (result === null) onError("정리표와 PDF 내보내기는 아직 연결되지 않았습니다");
       // CSV와 PDF가 든 폴더는 Finder에 열린다. 빠진 문서만 알린다
       else if (result.skipped.length > 0) onError(`CSV에서 빠진 문서가 있습니다: ${result.skipped.join(" / ")}`);
     } catch (e) {
@@ -131,8 +131,14 @@ export function LibraryView({ documents, progress, onOpen, onError, onContextMen
                   {session} <span className="count">{docs.length}개</span>
                 </h2>
                 {session !== NO_SESSION && pamphlets > 0 && (
-                  <button className="secondary" disabled={csvBusy === session} onClick={() => exportCsv(session)}>
-                    {csvBusy === session ? "내보내는 중" : "노션 CSV 내보내기"}
+                  // "노션 CSV 내보내기"는 무슨 버튼인지 알기 어려웠다(2026-11-09 사용자 지적). 만드는 것(정리표, PDF)을 이름에 쓴다
+                  <button
+                    className="secondary"
+                    disabled={csvBusy === session}
+                    title="이 묶음 팜플렛의 AI 정리를 표(CSV, 노션에서 가져오기 가능)로 만들고, 팜플렛 PDF와 함께 한 폴더에 담아 Finder에서 엽니다"
+                    onClick={() => exportCsv(session)}
+                  >
+                    {csvBusy === session ? "만드는 중" : "정리표와 PDF 내보내기"}
                   </button>
                 )}
               </div>
