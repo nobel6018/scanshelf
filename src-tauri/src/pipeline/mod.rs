@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use image::RgbImage;
 use scanshelf_core::processing::{OutputPage, PIPELINE_VERSION, PagePart, ProcessOptions, Processing};
+use scanshelf_core::overrides::Edits;
 use scanshelf_core::{Manifest, Page, PageLayout, Quad};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -68,6 +69,23 @@ struct PageState {
     /// 실제 쓴 자동 회전(문서 다수 방향을 따랐을 수 있다)
     #[serde(default)]
     applied_rotation: Option<u16>,
+    /// 처리하며 확인한 것(steps::PageCheck)
+    #[serde(default)]
+    checks: Vec<steps::PageCheck>,
+}
+
+/// 페이지마다 확인 결과. 화면이 "확인 필요"를 그린다
+pub fn page_checks(cache: &Path, document_id: &str) -> HashMap<Uuid, Vec<steps::PageCheck>> {
+    load_state(cache, document_id).pages.into_iter().map(|(id, s)| (id, s.checks)).collect()
+}
+
+/// 이 페이지에 쓸 처리 옵션. 사람이 페이지마다 고른 필터가 문서 설정보다 먼저다
+fn page_options(defaults: &ProcessOptions, edits: &Edits, page: Uuid) -> ProcessOptions {
+    let mut options = *defaults;
+    if let Some(filter) = edits.filters.get(&page) {
+        options.filter = *filter;
+    }
+    options
 }
 
 /// 문서의 다수 방향. 거치대에서 찍은 문서는 보통 한 방향이다. 글자가 적어 판단하지 못한 페이지가 따른다.
@@ -172,13 +190,14 @@ fn page_is_current(
 /// 다시 처리할 페이지 수. 보관함 목록에서 부르므로 이미지는 열지 않고 파일 정보만 본다
 pub fn stale_pages(dir: &Path, cache: &Path, manifest: &Manifest, processing: &Processing) -> usize {
     let state = load_state(cache, &manifest.id.to_string());
-    let options = processing.defaults;
+    let defaults = processing.defaults;
+    let edits = scanshelf_core::overrides::Edits::load(dir).unwrap_or_default();
     let current_ids: Vec<Uuid> = manifest.pages.iter().map(|p| p.id).collect();
     let orphan = processing.outputs.iter().any(|o| !current_ids.contains(&o.source_page));
     let stale = manifest
         .pages
         .iter()
-        .filter(|page| !page_is_current(dir, page, &options, processing, &state))
+        .filter(|page| !page_is_current(dir, page, &page_options(&defaults, &edits, page.id), processing, &state))
         .count();
     // 지운 페이지의 출력이 남아 있으면 정리하러 한 번 더 돌아야 한다
     stale + usize::from(orphan)
@@ -217,7 +236,7 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
     let dir = ctx.dir;
     let (manifest, edits) = crate::library::load_applied(dir)?;
     let document_id = manifest.id.to_string();
-    let options = load_processing(dir).defaults;
+    let defaults = load_processing(dir).defaults;
     let mut state = load_state(ctx.cache, &document_id);
     let total = manifest.pages.len();
     let report = |done: usize, stage: &'static str| {
@@ -239,6 +258,7 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
     // 둘째 바퀴: 앞쪽에서 글자가 없어 방향을 못 정한 페이지를 문서 다수 방향으로 다시 처리한다
     for pass in 0..2 {
         for (index, page) in manifest.pages.iter().enumerate() {
+            let options = page_options(&defaults, &edits, page.id);
             let current = {
                 let processing = load_processing(dir);
                 page_is_current(dir, page, &options, &processing, &state)
@@ -251,16 +271,25 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
             let raw_path = dir.join(&page.raw);
             let image = platform::decode_oriented(&raw_path, None).map_err(|e| e.to_string())?;
             let (quad, detected_quad) = choose_quad(page.quad, &image, platform::detect_document_quad);
+            let mut checks = Vec::new();
+            if quad.is_none() {
+                checks.push(steps::PageCheck::QuadMissing);
+            } else if page.quad.is_some() && detected_quad.is_some() {
+                checks.push(steps::PageCheck::QuadRedetected);
+            }
             report(index, "correct");
             let votes: Vec<u16> = manifest.pages.iter().filter_map(|p| state.pages.get(&p.id)?.rotation).collect();
             let document_turn = document_rotation(&votes);
             let decided = std::cell::Cell::new(None);
+            let doubtful = std::cell::Cell::new(false);
             let detect = |image: &RgbImage| {
-                let found = crate::ocr::detect_rotation(image);
-                decided.set(found);
-                found.or(document_turn)
+                let reading = crate::ocr::detect_rotation_checked(image);
+                decided.set(reading.rotation);
+                doubtful.set(reading.doubtful);
+                // 글자 방향이 의심스러우면 문서 다수 방향도 따르지 않는다. 그 페이지 글자가 바로 섰다고 읽혔기 때문이다
+                if reading.doubtful { Some(0) } else { reading.rotation.or(document_turn) }
             };
-            let parts = steps::correct_page(steps::CorrectInput {
+            let corrected = steps::correct_page(steps::CorrectInput {
                 image,
                 quad,
                 layout: page.layout,
@@ -271,8 +300,19 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
                 // 사람이 배치를 고른 장은 그대로 둔다
                 auto_spread: spread_document && !edits.layouts.contains_key(&page.id),
             })?;
+            if doubtful.get() {
+                checks.push(steps::PageCheck::RotationDoubtful);
+            }
+            // 펼침 배치로 찍은 앞뒤 표지는 원래 한 쪽이다. 한 쪽만 잡혔다, 나누지 못했다는 경고를 붙이지 않는다
+            let cover = index == 0 || index + 1 == manifest.pages.len();
+            checks.extend(
+                corrected
+                    .checks
+                    .into_iter()
+                    .filter(|c| !(cover && matches!(c, steps::PageCheck::QuadOnePage | steps::PageCheck::NotSplit))),
+            );
             let mut page_outputs = Vec::new();
-            for (part, image) in parts {
+            for (part, image) in corrected.parts {
                 page_outputs.push(write_output(ctx, &document_id, page.id, part, &image, &options, || {
                     report(index, "ocr")
                 })?);
@@ -288,7 +328,8 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
                     fingerprint: fingerprint(dir, page, &options),
                     detected_quad,
                     rotation: decided.get(),
-                    applied_rotation: decided.get().or(document_turn),
+                    applied_rotation: if doubtful.get() { Some(0) } else { decided.get().or(document_turn) },
+                    checks,
                 },
             );
             write_json(&state_path(ctx.cache, &document_id), &state)?;
@@ -302,7 +343,11 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
         redo = manifest
             .pages
             .iter()
-            .filter(|p| state.pages.get(&p.id).is_some_and(|s| s.rotation.is_none() && s.applied_rotation != Some(turn)))
+            .filter(|p| {
+                state.pages.get(&p.id).is_some_and(|s| {
+                    s.rotation.is_none() && s.applied_rotation != Some(turn) && !s.checks.contains(&steps::PageCheck::RotationDoubtful)
+                })
+            })
             .map(|p| p.id)
             .collect();
         if pass == 1 || redo.is_empty() {
@@ -448,3 +493,4 @@ mod quad_choice_tests {
         assert_eq!(choose_quad(None, &photo(), |_| None), (None, None));
     }
 }
+

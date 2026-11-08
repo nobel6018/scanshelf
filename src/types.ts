@@ -35,6 +35,8 @@ export interface DocumentSummary {
   state: DocumentState;
   cover: string | null;
   hasSummary: boolean;
+  /** 처리하며 사람이 볼 것이 나온 쪽 수 */
+  reviewPages: number;
 }
 
 export interface ProcessOptions {
@@ -53,6 +55,8 @@ export interface Edits {
   /** 자동 회전 뒤에 더 돌린 각도(시계 방향) */
   rotations?: Record<string, number>;
   deletedPages?: string[];
+  /** 페이지마다 고른 필터. 없으면 문서 처리 옵션을 따른다 */
+  filters?: Record<string, Filter>;
   pageOrder?: string[];
   /** `/` 계층 태그. 고칠 때는 api.setDocumentTags를 쓴다(tagsByUser를 함께 켠다) */
   tags?: string[];
@@ -78,7 +82,18 @@ export interface PageView {
   quad: Quad | null;
   quadSource: QuadSource;
   outputs: OutputView[];
+  /** 처리하며 확인한 것(src-tauri/src/pipeline/steps.rs PageCheck) */
+  checks: PageCheck[];
 }
+
+export type PageCheck =
+  | "quadRedetected"
+  | "quadMissing"
+  | "quadOnePage"
+  | "notSplit"
+  | "splitAtSeam"
+  | "rotationDoubtful"
+  | "photoPage";
 
 export interface DocumentDetail {
   summary: DocumentSummary;

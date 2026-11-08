@@ -22,6 +22,42 @@ const AUTO_SPREAD_MIN_ASPECT: f32 = 1.15;
 const AUTO_SPREAD_MIN_CONFIDENCE: f32 = 0.8;
 const AUTO_SPREAD_MAX_OFF_CENTER: f32 = 0.08;
 
+/// 처리하며 확인한 것. 자동으로 고친 것과 사람이 볼 것을 페이지마다 남겨 화면에 "확인 필요"로 띄운다.
+/// @see docs/pipeline.md "페이지 확인"
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PageCheck {
+    /// iPhone 테두리가 사각형이 아니어서 Mac이 다시 찾았다
+    QuadRedetected,
+    /// 믿을 만한 테두리가 없어 사진 전체를 썼다. 배경이 남는다
+    QuadMissing,
+    /// 펼침인데 편 결과가 세로로 길다. 한 쪽만 테두리로 잡혔을 수 있다
+    QuadOnePage,
+    /// 펼침인데 접힌 선을 찾지 못해 한 장으로 남겼다
+    NotSplit,
+    /// 그림자 없는 펼침을 가운데 이음매에서 나눴다
+    SplitAtSeam,
+    /// 글자 방향이 돌려야 한다고 했지만 돌려 보니 덜 읽혀 그대로 뒀다
+    RotationDoubtful,
+    /// 종이 바탕이 거의 없는 사진 페이지라 선명하게 대신 전체 밝기만 맞췄다
+    PhotoPage,
+}
+
+impl PageCheck {
+    /// 사람이 봐야 하는지. 아니면 자동으로 처리한 기록이다
+    pub fn needs_review(self) -> bool {
+        matches!(self, Self::QuadMissing | Self::QuadOnePage | Self::NotSplit | Self::SplitAtSeam | Self::RotationDoubtful)
+    }
+}
+
+pub struct Corrected {
+    pub parts: Vec<(PagePart, RgbImage)>,
+    pub checks: Vec<PageCheck>,
+}
+
+/// 펼침을 편 결과가 이보다 세로로 길면(폭/높이) 한 쪽만 잡혔다고 본다. A4 펼침은 1.41, 한 쪽은 0.71
+const SPREAD_MIN_ASPECT: f32 = 1.0;
+
 pub struct CorrectInput<'a> {
     pub image: RgbImage,
     pub quad: Option<Quad>,
@@ -68,25 +104,52 @@ fn effective_layout(image: &RgbImage, layout: PageLayout, auto_spread: bool) -> 
 }
 
 /// 원본 한 장을 출력 페이지 한 장, 두 장(펼친 책), 세 장(3단 접지)으로 만든다
-pub fn correct_page(input: CorrectInput<'_>) -> Result<Vec<(PagePart, RgbImage)>, String> {
+pub fn correct_page(input: CorrectInput<'_>) -> Result<Corrected, String> {
     let models = input.models;
+    let mut checks = Vec::new();
     let flat = perspective_step(input.image, input.quad)?;
     // 접힌 선은 세로로 찾으므로 나누기 전에 세워야 한다. 누운 채로는 펼친 두 쪽을 나누지 못한다
     let flat = rotate_step(flat, input.layout, input.detect_rotation, input.extra_rotation);
     let flat = if input.options.remove_fingers { remove_fingers_step(flat, models)? } else { flat };
     let mut outputs = Vec::new();
     let layout = effective_layout(&flat, input.layout, input.auto_spread);
-    for (part, image) in split_step(flat, layout) {
+    if layout == PageLayout::Spread && input.quad.is_some() && (flat.width() as f32) < flat.height() as f32 * SPREAD_MIN_ASPECT {
+        checks.push(PageCheck::QuadOnePage);
+    }
+    let (parts, split_check) = split_step_checked(flat, layout);
+    checks.extend(split_check);
+    for (part, image) in parts {
         let image = dewarp_step(image, input.options.dewarp, models)?;
         let image = if input.options.remove_handwriting {
             remove_handwriting_step(image, models)?
         } else {
             image
         };
+        if input.options.filter != Filter::Original
+            && !checks.contains(&PageCheck::PhotoPage)
+            && scanshelf_vision::filter::is_photo_page(&image)
+        {
+            checks.push(PageCheck::PhotoPage);
+        }
         let image = filter_step(image, input.options.filter);
         outputs.push((part, image));
     }
-    Ok(outputs)
+    Ok(Corrected { parts: outputs, checks })
+}
+
+/// 나누기와 그 확인. 사람이 한 쪽으로 둔 장(QuadOnePage가 아닌 한 쪽 표지 등)은 나누지 못해도 확인 대상이 아니다
+fn split_step_checked(image: RgbImage, layout: PageLayout) -> (Vec<(PagePart, RgbImage)>, Option<PageCheck>) {
+    if layout != PageLayout::Spread {
+        return (split_step(image, layout), None);
+    }
+    let wide = image.width() as f32 >= image.height() as f32 * SPREAD_MIN_ASPECT;
+    match scanshelf_vision::split_spread(&image) {
+        scanshelf_vision::Split::Spread { left, right, gutter } => {
+            let check = (gutter.confidence < scanshelf_vision::split::MIN_CONFIDENCE + 0.1).then_some(PageCheck::SplitAtSeam);
+            (vec![(PagePart::Left, left), (PagePart::Right, right)], check)
+        }
+        scanshelf_vision::Split::Single { .. } => (vec![(PagePart::Whole, image)], wide.then_some(PageCheck::NotSplit)),
+    }
 }
 
 /// 1단계: 원근 보정(scanshelf-vision perspective). 꼭짓점이 없으면 사진 전체를 크기만 맞춰 쓴다
@@ -205,6 +268,7 @@ mod tests {
             auto_spread: false,
         })
         .unwrap()
+        .parts
         .into_iter()
         .map(|(part, _)| part)
         .collect()

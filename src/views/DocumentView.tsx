@@ -8,7 +8,9 @@ import type {
   DocumentKind,
   Edits,
   OcrPage,
+  Filter,
   OutputView,
+  PageCheck,
   PageLayout,
   PageView,
   ProcessOptions,
@@ -34,6 +36,24 @@ interface Props {
   onChanged: () => void;
   onError: (e: string) => void;
 }
+
+const FILTER_NAME: Record<Filter, string> = {
+  original: "원본",
+  enhanced: "선명하게",
+  grayscale: "회색",
+  blackWhite: "흑백",
+};
+
+/** 처리하며 확인한 것. review면 사람이 볼 것이라 썸네일에 ! 표시 */
+const CHECK_TEXT: Record<PageCheck, { text: string; review: boolean }> = {
+  quadRedetected: { text: "iPhone 꼭짓점이 틀려 Mac이 다시 찾음", review: false },
+  quadMissing: { text: "꼭짓점을 못 찾아 사진 전체를 씀. 꼭짓점 고치기 필요", review: true },
+  quadOnePage: { text: "펼침인데 한 쪽만 잡힌 듯함. 꼭짓점 확인", review: true },
+  notSplit: { text: "접힌 선을 못 찾아 두 쪽으로 나누지 못함", review: true },
+  splitAtSeam: { text: "가운데 이음매에서 나눔. 나눈 자리 확인", review: true },
+  rotationDoubtful: { text: "방향이 애매해 돌리지 않음. 거꾸로면 돌리기", review: true },
+  photoPage: { text: "사진 페이지라 선명하게 대신 밝기만 맞춤", review: false },
+};
 
 /** 썸네일 줄 하나. 출력 페이지가 없으면(처리 전) 원본 페이지 자리를 둔다 */
 interface Item {
@@ -169,6 +189,15 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
   const restorePage = (pageId: string) =>
     saveEdits((edits) => ({ ...edits, deletedPages: (edits.deletedPages ?? []).filter((id) => id !== pageId) }));
 
+  // 이 쪽만 다른 필터. "default"면 문서 처리 옵션을 따른다
+  const setPageFilter = (page: PageView, filter: Filter | "default") =>
+    saveEdits((edits) => {
+      const filters = { ...(edits.filters ?? {}) };
+      if (filter === "default") delete filters[page.id];
+      else filters[page.id] = filter;
+      return { ...edits, filters };
+    });
+
   const setLayout = (page: PageView, layout: PageLayout) =>
     saveEdits((edits) => ({
       ...edits,
@@ -287,6 +316,11 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
                 )}
               </div>
               <span className="thumb-label">
+                {item.page.checks.some((c) => CHECK_TEXT[c].review) && (
+                  <span className="check-dot" title={item.page.checks.map((c) => CHECK_TEXT[c].text).join("\n")}>
+                    !
+                  </span>
+                )}
                 {item.pageIndex + 1}
                 {item.output && partLabel(item.output.part) && ` ${partLabel(item.output.part)}`}
               </span>
@@ -308,6 +342,19 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
               <button className="secondary" data-shortcut="rotatePage" onClick={() => rotatePage(current.page)}>
                 돌리기
               </button>
+              <select
+                aria-label="이 쪽 필터"
+                title="이 쪽만 다른 필터로 처리합니다"
+                value={detail.edits.filters?.[current.page.id] ?? "default"}
+                onChange={(e) => setPageFilter(current.page, e.target.value as Filter | "default")}
+              >
+                <option value="default">필터: 문서 설정({FILTER_NAME[detail.options.filter]})</option>
+                {(Object.keys(FILTER_NAME) as Filter[]).map((f) => (
+                  <option key={f} value={f}>
+                    필터: {FILTER_NAME[f]}
+                  </option>
+                ))}
+              </select>
               <button
                 className="secondary"
                 data-shortcut="movePageUp"
@@ -381,6 +428,11 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
             <div className="viewer-foot hint">
               {current.pageIndex + 1}/{detail.pages.length}쪽 | 꼭짓점: {QUAD_SOURCE[current.page.quadSource]}
               {needle && ocr && ` | 찾은 줄 ${hitLines.length}개`}
+              {current.page.checks.map((check) => (
+                <span key={check} className={CHECK_TEXT[check].review ? "check review" : "check"}>
+                  {CHECK_TEXT[check].text}
+                </span>
+              ))}
             </div>
           )}
         </div>

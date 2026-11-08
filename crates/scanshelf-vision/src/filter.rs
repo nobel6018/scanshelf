@@ -32,6 +32,12 @@ const PHOTO_MIN_BLOCKS: usize = 24;
 const SAUVOLA_K: f32 = 0.18;
 const SAUVOLA_R: f32 = 128.0;
 
+/// 종이 바탕 블록이 이 비율보다 적으면 사진 페이지로 본다. 2026-11-08 실제 팜플렛 60여 쪽에서
+/// 사진이 꽉 찬 표지는 0.00~0.19, 글과 표가 있는 쪽은 0.38 이상이었다
+pub const PHOTO_PAGE_MAX_PAPER: f32 = 0.3;
+/// 사진 페이지의 수준 맞춤 한도. 어두운 표지를 억지로 밝히지 않는다
+const PHOTO_PAGE_MAX_GAIN: f32 = 1.25;
+
 pub fn apply_filter(img: &RgbImage, filter: Filter) -> RgbImage {
     match filter {
         Filter::Original => img.clone(),
@@ -39,6 +45,38 @@ pub fn apply_filter(img: &RgbImage, filter: Filter) -> RgbImage {
         Filter::Grayscale => to_gray_rgb(&enhance(img)),
         Filter::BlackWhite => binarize(&enhance(img)),
     }
+}
+
+/// 종이 바탕이 거의 없는 페이지(사진이 꽉 찬 표지)인지. 축소본으로 빠르게 본다
+pub fn is_photo_page(img: &RgbImage) -> bool {
+    let (w, h) = fit_long_side(img.width(), img.height(), 1600);
+    Background::estimate(&downscale_area(img, w, h)).paper_fraction < PHOTO_PAGE_MAX_PAPER
+}
+
+/// 사진 페이지 보정. 블록마다 나누면 사진 속 밝은 곳을 종이로 알고 색이 깨진다(2026-11-08 데이터센터 박람회_9 표지).
+/// 페이지 전체에 한 번만 흰색과 검은색 점을 맞추고, 끌어올리는 폭도 제한한다
+fn enhance_photo(img: &RgbImage) -> RgbImage {
+    let mut hist = [[0u32; 256]; 3];
+    for p in img.pixels() {
+        for c in 0..3 {
+            hist[c][p[c] as usize] += 1;
+        }
+    }
+    let n = img.width() * img.height();
+    let levels: [(f32, f32); 3] = std::array::from_fn(|c| {
+        let low = hist_percentile(&hist[c], n, 0.005) as f32;
+        let high = (hist_percentile(&hist[c], n, 0.995) as f32).max(low + 1.0);
+        let gain = (255.0 / (high - low)).min(PHOTO_PAGE_MAX_GAIN);
+        (low.min(24.0), gain)
+    });
+    let mut out = img.clone();
+    for p in out.pixels_mut() {
+        for c in 0..3 {
+            let (low, gain) = levels[c];
+            p[c] = ((p[c] as f32 - low) * gain).clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
 }
 
 /// 종이 배경 추정. 블록 중심 격자에 RGB를 담고 양선형으로 읽는다
@@ -50,6 +88,8 @@ pub struct Background {
     grid: [Plane; 3],
     /// 사진 같은 영역(0~1). 종이로 인정되지 않은 블록을 넓혀 부드럽게 한 값
     photo: Plane,
+    /// 종이 바탕으로 인정된 블록 비율(채도까지 보는 엄격한 기준). 사진이 꽉 찬 표지는 낮다
+    pub paper_fraction: f32,
 }
 
 impl Background {
@@ -115,6 +155,7 @@ impl Background {
         };
         let mask = photo_mask(&stats.iter().map(|s| s.3 >= PHOTO_MIN_MIDTONES).collect::<Vec<_>>(), cols, rows);
         let mut valid: Vec<bool> = stats.iter().zip(&mask.data).map(|(s, m)| *m < 0.5 && is_paper(s, true)).collect();
+        let paper_fraction = valid.iter().filter(|v| **v).count() as f32 / valid.len().max(1) as f32;
         // 색지 전체가 종이면 채도 조건으로는 하나도 안 남는다. 그때는 채도를 보지 않는다
         if valid.iter().filter(|v| **v).count() < valid.len() / 7 {
             valid = stats.iter().zip(&mask.data).map(|(s, m)| *m < 0.5 && is_paper(s, false)).collect();
@@ -132,7 +173,7 @@ impl Background {
             box_blur(&box_blur(&filled, 1), 1)
         });
         let photo = box_blur(&mask, 1);
-        Background { cols, rows, block, grid, photo }
+        Background { cols, rows, block, grid, photo, paper_fraction }
     }
 
     /// 화소 (x, y)가 사진 영역인 정도(0~1)
@@ -286,9 +327,12 @@ fn luma_of_f32(c: [f32; 3]) -> f32 {
     (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]).max(8.0)
 }
 
-/// 배경으로 나누고 수준을 맞춘다
+/// 배경으로 나누고 수준을 맞춘다. 종이 바탕이 거의 없는 사진 페이지는 전체 수준만 맞춘다
 pub fn enhance(img: &RgbImage) -> RgbImage {
     let bg = Background::estimate(img);
+    if bg.paper_fraction < PHOTO_PAGE_MAX_PAPER {
+        return enhance_photo(img);
+    }
     let w = img.width() as usize;
     let mut out = img.clone();
     let scale = 255.0 / (WHITE_POINT - BLACK_POINT);
@@ -443,6 +487,26 @@ mod tests {
             assert!(p.0[0] == 0 || p.0[0] == 255);
         }
         assert!((wrong as f32) < total as f32 * 0.03, "틀린 화소 {wrong}/{total}");
+    }
+
+    #[test]
+    fn 종이_바탕이_없는_사진_페이지는_전체_밝기만_맞춘다() {
+        // 큰 색 덩어리가 이어진 사진. 블록마다 나누면 밝은 덩어리가 종이로 잡혀 하얗게 날아가고 색이 깨진다
+        let img = RgbImage::from_fn(400, 560, |x, y| {
+            let v = ((x as f32 * 0.05).sin() * 60.0 + (y as f32 * 0.03).cos() * 50.0 + 120.0) as u8;
+            image::Rgb([v / 3, v / 2, v])
+        });
+        assert!(is_photo_page(&img));
+        let out = apply_filter(&img, Filter::Enhanced);
+        // 전체 수준 맞춤은 순서를 바꾸지 않는다: 원본에서 더 밝던 화소는 결과에서도 더 밝거나 같다
+        let (a, b) = (img.get_pixel(10, 10)[2], img.get_pixel(200, 300)[2]);
+        let (oa, ob) = (out.get_pixel(10, 10)[2], out.get_pixel(200, 300)[2]);
+        assert_eq!(a.cmp(&b), oa.cmp(&ob));
+    }
+
+    #[test]
+    fn 글이_있는_종이_페이지는_사진_페이지가_아니다() {
+        assert!(!is_photo_page(&shaded_page(400, 560)));
     }
 
     #[test]

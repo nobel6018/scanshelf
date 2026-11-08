@@ -86,6 +86,8 @@ pub struct DocumentSummary {
     /// 첫 출력 페이지 썸네일 절대 경로. 처리 전이면 없음
     pub cover: Option<String>,
     pub has_summary: bool,
+    /// 처리하며 사람이 볼 것이 나온 쪽 수(꼭짓점, 나누기, 방향)
+    pub review_pages: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -153,6 +155,10 @@ pub fn summarize(dir: &Path, cache: &Path, pipeline: &Pipeline) -> Result<Docume
         .map(|o| pipeline::thumb_path(cache, &id, &o.id))
         .filter(|p| p.exists())
         .map(|p| p.to_string_lossy().into_owned());
+    let review_pages = pipeline::page_checks(cache, &id)
+        .into_iter()
+        .filter(|(page, checks)| manifest.pages.iter().any(|p| p.id == *page) && checks.iter().any(|c| c.needs_review()))
+        .count();
     Ok(DocumentSummary {
         id,
         name: manifest.name.clone(),
@@ -163,6 +169,7 @@ pub fn summarize(dir: &Path, cache: &Path, pipeline: &Pipeline) -> Result<Docume
         state,
         cover,
         has_summary: dir.join(SUMMARY_FILE).exists(),
+        review_pages,
     })
 }
 
@@ -200,6 +207,8 @@ pub struct PageView {
     pub quad: Option<Quad>,
     pub quad_source: QuadSource,
     pub outputs: Vec<OutputView>,
+    /// 처리하며 확인한 것(pipeline::steps::PageCheck). 화면이 "확인 필요"를 그린다
+    pub checks: Vec<pipeline::steps::PageCheck>,
 }
 
 #[derive(Debug, Serialize)]
@@ -225,6 +234,7 @@ pub fn get_document(
     let (manifest, edits) = load_applied(&dir)?;
     let processing = load_processing(&dir);
     let detected = pipeline::detected_quads(&cache, &document_id);
+    let mut checks = pipeline::page_checks(&cache, &document_id);
     let pages = manifest
         .pages
         .iter()
@@ -262,6 +272,7 @@ pub fn get_document(
                 quad,
                 quad_source,
                 outputs,
+                checks: checks.remove(&page.id).unwrap_or_default(),
             }
         })
         .collect();

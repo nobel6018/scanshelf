@@ -138,6 +138,11 @@ export function LibraryView({ documents, progress, onOpen, onError, onContextMen
                       <div className="doc-meta">
                         <span className={`badge kind-${doc.kind}`}>{KIND_LABEL[doc.kind]}</span>
                         <span className={`badge state-${label.tone}`}>{label.text}</span>
+                        {doc.reviewPages > 0 && (
+                          <span className="badge state-warn" title="꼭짓점, 나누기, 방향을 사람이 볼 쪽이 있습니다">
+                            확인 {doc.reviewPages}쪽
+                          </span>
+                        )}
                       </div>
                       <div className="doc-name">{doc.name}</div>
                       <div className="doc-sub">

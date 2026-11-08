@@ -142,11 +142,67 @@ pub fn find_gutter(img: &RgbImage) -> Gutter {
 /// 접힌 선을 찾아 두 페이지로 나눈다. 신뢰도가 낮으면 나누지 않는다
 pub fn split_spread(img: &RgbImage) -> Split {
     let gutter = find_gutter(img);
-    if gutter.confidence < MIN_CONFIDENCE {
+    let gutter = if gutter.confidence >= MIN_CONFIDENCE {
+        gutter
+    } else if let Some(seam) = centered_seam(img) {
+        seam
+    } else {
         return Split::Single { gutter };
-    }
+    };
     let (left, right) = cut(img, &gutter);
     Split::Spread { left, right, gutter }
+}
+
+/// 이보다 가로로 길어야 그림자도 빈 띠도 없는 펼침을 가운데에서 나눈다. 한 쪽만 찍은 표지(세로로 긴 사진)는 나누지 않는다
+const SEAM_MIN_ASPECT: f32 = 1.2;
+/// 경계선을 찾는 범위(가운데에서 폭 대비)
+const SEAM_REACH: f32 = 0.03;
+/// 펼침 판단 신뢰도. MIN_CONFIDENCE 바로 위다(진단용)
+const SEAM_CONFIDENCE: f32 = 0.4;
+
+/// 접힌 선 그림자도 빈 띠도 없는 펼침(코팅지 팜플렛을 눌러 찍음)의 이음매. 꼭짓점으로 원근을 편 펼침은 이음매가 가운데 가까이 있다.
+/// 가운데 ±3% 안에서 위아래로 길게 이어지는 세로 경계(두 페이지 바탕색이 바뀌는 단, 가는 선)를 고른다. 없으면 나누지 않는다.
+/// 2026-11-08 데이터센터 박람회_10 2쪽: 접힌 선은 0.50인데 그림자가 없고, 왼쪽 사진 경계(0.38)가 더 깊은 골이라 나누지 못했다.
+/// 가운데 밖으로 찾지 않는 이유는 그 사진 경계 같은 골을 접힌 선으로 잘못 골라 내용을 자르기 때문이다
+fn centered_seam(img: &RgbImage) -> Option<Gutter> {
+    if (img.width() as f32) < img.height() as f32 * SEAM_MIN_ASPECT {
+        return None;
+    }
+    let (aw, ah) = fit_long_side(img.width(), img.height(), ANALYSIS_LONG_SIDE);
+    let g = luma(&downscale_area(img, aw, ah));
+    let (w, h) = (g.width, g.height);
+    let lo = ((0.5 - SEAM_REACH) * w as f32) as usize;
+    let hi = ((0.5 + SEAM_REACH) * w as f32).ceil() as usize;
+    // 열마다 "양옆과 다른 행"의 비율. 이음매는 위에서 아래까지 이어지고, 글자나 그림 경계는 일부 행에만 있다
+    let score = |x: usize| {
+        let mut hits = 0usize;
+        for y in 0..h {
+            let at = |dx: isize| g.data[y * w + (x as isize + dx) as usize];
+            let (l, c, r) = (at(-2), at(0), at(2));
+            if (l - r).abs() > 6.0 || (l.min(r) - c) > 4.0 {
+                hits += 1;
+            }
+        }
+        hits as f32 / h as f32
+    };
+    let scores: Vec<(usize, f32)> = (lo.max(2)..hi.min(w - 2)).map(|x| (x, score(x))).collect();
+    let mut sorted: Vec<f32> = scores.iter().map(|s| s.1).collect();
+    sorted.sort_by(f32::total_cmp);
+    let median = sorted.get(sorted.len() / 2).copied().unwrap_or(0.0);
+    let (best_x, best) = scores.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1))?;
+    // 뚜렷한 세로 경계가 없으면 나누지 않는다. 단서 없이 가운데를 자르면 가로로 긴 한 쪽 그림을 망친다
+    if best < 0.5 || best < median * 1.5 {
+        return None;
+    }
+    let x = best_x as f32;
+    let cx = (x + 0.5) * (img.width() as f32 / w as f32) - 0.5;
+    Some(Gutter {
+        x_top: cx,
+        x_bottom: cx,
+        confidence: SEAM_CONFIDENCE,
+        shadow_depth: 0.0,
+        blank_width: 0.0,
+    })
 }
 
 /// 접힌 선이 세로가 되게 돌린 뒤 그 선에서 자른다
@@ -290,6 +346,29 @@ pub(crate) fn percentile(data: &[f32], q: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn 그림자도_빈_띠도_없는_가로_펼침은_가운데_이음매에서_나눈다() {
+        // 왼쪽 0~38%는 어두운 사진, 나머지는 밝은 바탕. 두 페이지 바탕이 50%에서 살짝 달라진다
+        let img = RgbImage::from_fn(1400, 1000, |x, _| {
+            let v = if x < 532 { 40 } else if x < 700 { 235 } else { 225 };
+            image::Rgb([v, v, v])
+        });
+        match split_spread(&img) {
+            Split::Spread { gutter, .. } => {
+                let at = (gutter.x_top + gutter.x_bottom) / 2.0 / img.width() as f32;
+                assert!((at - 0.5).abs() < 0.01, "이음매 {at}");
+            }
+            Split::Single { gutter } => panic!("나누지 못함: {gutter:?}"),
+        }
+    }
+
+    #[test]
+    fn 세로로_긴_한_쪽_사진은_가운데에서_자르지_않는다() {
+        let img = RgbImage::from_fn(700, 1000, |_, _| image::Rgb([230, 230, 230]));
+        assert!(matches!(split_spread(&img), Split::Single { .. }));
+    }
+
     use super::*;
     use image::Rgb;
 

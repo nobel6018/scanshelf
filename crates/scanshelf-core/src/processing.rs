@@ -13,7 +13,8 @@ use crate::{ManifestError, fsio};
 pub const PROCESSING_FILE: &str = "processing.json";
 
 /// 처리 알고리즘이 바뀌면 올린다. 이보다 낮은 결과는 다시 처리 대상으로 표시한다
-pub const PIPELINE_VERSION: u32 = 4;
+/// 5(2026-11-08): 사진 페이지 필터, 회전 다시 확인, 그림자 없는 펼침 나누기
+pub const PIPELINE_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

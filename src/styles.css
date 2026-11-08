@@ -343,3 +343,8 @@ mark { background: #ffe58a; border-radius: 2px; }
   position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); font-size: 12px;
   padding: 6px 12px; border-radius: 999px; background: rgba(31, 42, 31, 0.85); color: #fffdf7;
 }
+
+/* 페이지 확인(src-tauri/src/pipeline/steps.rs PageCheck) */
+.viewer-foot .check { margin-left: 8px; }
+.viewer-foot .check.review { color: #8a4b12; font-weight: 600; }
+.check-dot { display: inline-block; min-width: 16px; height: 16px; margin-right: 4px; border-radius: 8px; background: #8a4b12; color: #fff; font-size: 11px; line-height: 16px; text-align: center; font-weight: 700; }

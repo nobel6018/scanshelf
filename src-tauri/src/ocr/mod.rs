@@ -24,10 +24,28 @@ const ROTATION_PROBE_SIDE: u32 = 1400;
 const ROTATION_MIN_SCORE: f64 = 15.0;
 /// 1등 방향이 2등보다 이만큼 앞서야 믿는다. 도면 옆에 세로로 적힌 글자처럼 다른 방향 글줄이 섞인다
 const ROTATION_MIN_LEAD: f64 = 1.5;
+/// 돌린 뒤 읽힌 글자량이 돌리기 전의 이 비율보다 적으면 돌리지 않는다. 바로 선 글은 보통 Vision이 더 많이 읽는다.
+/// 2026-11-08 실측: 잘못 뒤집은(180도) 실제 두 장은 0.66, 0.76, 제대로 돌린 책 14장은 0.98 이상.
+/// 합성 영문 시험 페이지는 거꾸로 된 글을 더 읽어 0.86이 나온다. 그 사이에 둔다(여유가 크지 않다)
+const ROTATION_MIN_KEEP: f64 = 0.8;
 
-/// 페이지를 바로 세우려면 시계 방향으로 몇 도 돌려야 하는지. 글줄의 읽는 방향을 글자 수로 투표한다.
-/// 글자가 적거나 애매하면 None. 그림만 있는 페이지를 잘못 돌리느니 그대로 둔다
+/// 방향 판단 결과
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RotationReading {
+    pub rotation: Option<u16>,
+    /// 글줄 방향은 돌리라고 했는데 돌려 보니 덜 읽혀 그대로 뒀다(사람이 볼 것)
+    pub doubtful: bool,
+}
+
+/// 페이지를 바로 세우려면 시계 방향으로 몇 도 돌려야 하는지. 글자가 적거나 애매하면 None
+#[allow(dead_code)]
 pub fn detect_rotation(image: &RgbImage) -> Option<u16> {
+    detect_rotation_checked(image).rotation
+}
+
+/// 글줄의 읽는 방향을 글자 수로 투표하고, 돌린 뒤 다시 읽어 확인한다.
+/// 글자가 적거나 애매하면 None. 그림만 있는 페이지를 잘못 돌리느니 그대로 둔다
+pub fn detect_rotation_checked(image: &RgbImage) -> RotationReading {
     #[cfg(target_os = "macos")]
     {
         let (w, h) = image.dimensions();
@@ -37,18 +55,31 @@ pub fn detect_rotation(image: &RgbImage) -> Option<u16> {
             ((w as f64 * scale) as u32).max(1),
             ((h as f64 * scale) as u32).max(1),
         );
-        match macos::text_directions(&probe) {
-            Ok(lines) => pick_rotation(direction_votes(&lines)),
+        let lines = match macos::text_directions(&probe) {
+            Ok(lines) => lines,
             Err(error) => {
                 eprintln!("방향 판단 중 글자 인식 실패: {error}");
-                None
+                return RotationReading::default();
             }
+        };
+        let Some(picked) = pick_rotation(direction_votes(&lines)) else {
+            return RotationReading::default();
+        };
+        if picked == 0 {
+            return RotationReading { rotation: Some(0), doubtful: false };
+        }
+        // 돌린 뒤 다시 읽어 확인한다. Vision이 바로 선 페이지의 글줄 방향을 거꾸로 알려 주는 일이 있다
+        // (2026-11-08 데이터센터 박람회_9 3쪽, 로보월드_6 3단 접지: 180도로 뒤집혔다). 그때는 돌린 쪽이 덜 읽힌다
+        match macos::text_directions(&rotate(&probe, picked)) {
+            Ok(after) if rotation_confirmed(&lines, &after) => RotationReading { rotation: Some(picked), doubtful: false },
+            Ok(_) => RotationReading { rotation: None, doubtful: true },
+            Err(_) => RotationReading::default(),
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = image;
-        None
+        RotationReading::default()
     }
 }
 
@@ -72,6 +103,13 @@ fn direction_votes(lines: &[(f64, f64, f64)]) -> [f64; 4] {
         votes[quarter] += weight;
     }
     votes
+}
+
+/// 돌린 뒤에 바로 선 글줄(0도 칸)이 1등이고, 읽힌 글자량이 돌리기 전보다 크게 줄지 않았는지
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn rotation_confirmed(before: &[(f64, f64, f64)], after: &[(f64, f64, f64)]) -> bool {
+    let total = |lines: &[(f64, f64, f64)]| lines.iter().map(|l| l.2).sum::<f64>();
+    pick_rotation(direction_votes(after)) == Some(0) && total(after) >= total(before) * ROTATION_MIN_KEEP
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -112,8 +150,22 @@ mod tests {
     }
 
     #[test]
+    fn 돌린_뒤_덜_읽히면_돌리지_않는다() {
+        // 2026-11-08 데이터센터 박람회_9 3쪽: 180도라고 했지만 돌리니 201 → 132로 덜 읽혔다
+        let before = [(-100.0, 0.0, 201.0)];
+        assert!(!rotation_confirmed(&before, &[(100.0, 0.0, 132.0)]));
+        // 실제로 누운 책 페이지: 돌리니 461 → 695로 더 읽혔다
+        assert!(rotation_confirmed(&[(0.0, -100.0, 461.0)], &[(100.0, 0.0, 695.0)]));
+        // 누운 글은 Vision이 누운 채로도 잘 읽는다(합성 페이지 47 → 40.5)
+        assert!(rotation_confirmed(&[(0.0, -100.0, 47.0)], &[(100.0, 0.0, 40.5)]));
+        // 돌린 뒤에도 바로 서지 않으면 믿지 않는다
+        assert!(!rotation_confirmed(&before, &[(0.0, 100.0, 300.0)]));
+    }
+
+    #[test]
     fn 글자가_적거나_애매하면_방향을_정하지_않는다() {
         assert_eq!(pick_rotation([4.0, 1.0, 0.0, 2.0]), None);
         assert_eq!(pick_rotation([100.0, 80.0, 10.0, 5.0]), None);
     }
 }
+
