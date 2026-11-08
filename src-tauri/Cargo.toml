@@ -1,6 +1,6 @@
 [package]
 name = "scanshelf"
-version = "0.3.7"
+version = "0.3.8"
 description = "scanshelf Mac 앱: iPhone에서 받은 스캔을 보정, OCR, AI 정리, 내보내기"
 edition = "2024"
 publish = false
