@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { registerCommand } from "../shortcuts";
 import { OriginPanel } from "./OriginPanel";
 import { api, compact, fileUrl, KIND_LABEL } from "../api";
 import type {
@@ -101,12 +102,23 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || editingQuad) return;
+      // ⌘↑, ⌘↓는 쪽 순서 바꾸기다(src/shortcuts.ts). 고른 쪽만 옮기는 일과 겹치지 않게 수식키가 있으면 건너뛴다
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === "ArrowDown" || e.key === "ArrowRight") setSelected((s) => Math.min(items.length - 1, s + 1));
       if (e.key === "ArrowUp" || e.key === "ArrowLeft") setSelected((s) => Math.max(0, s - 1));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [items.length, editingQuad]);
+
+  // 도구 막대 단축키(src/shortcuts.ts). 처리 함수는 아래에서 그릴 때마다 최신으로 바꿔 넣는다
+  const findRef = useRef<HTMLInputElement>(null);
+  const toolbar = useRef<Partial<Record<string, () => void>>>({});
+  useEffect(() => {
+    const names = ["editQuad", "rotatePage", "movePageUp", "movePageDown", "removePage", "toggleText", "findInPage"];
+    const offs = names.map((name) => registerCommand(name, () => toolbar.current[name]?.()));
+    return () => offs.forEach((off) => off());
+  }, []);
 
   const saveEdits = useCallback(
     async (change: (edits: Edits) => Edits) => {
@@ -125,7 +137,7 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
   if (!detail) {
     return (
       <section className="page">
-        <button className="ghost back" onClick={onBack}>
+        <button className="ghost back" data-shortcut="library" onClick={onBack}>
           보관함으로
         </button>
         <p className="empty">여는 중</p>
@@ -170,6 +182,22 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
       return { ...edits, rotations: { ...rotations, [page.id]: ((rotations[page.id] ?? 0) + 90) % 360 } };
     });
 
+  // 꼭짓점 창이 열려 있으면 도구 막대 단축키는 쉰다. 창 뒤의 쪽을 돌리거나 빼지 않게
+  toolbar.current = current && !editingQuad
+    ? {
+        editQuad: () => setEditingQuad(current.page),
+        rotatePage: () => rotatePage(current.page),
+        movePageUp: () => current.pageIndex > 0 && movePage(current.page.id, -1),
+        movePageDown: () => current.pageIndex < detail.pages.length - 1 && movePage(current.page.id, 1),
+        removePage: () => deletePage(current.page.id),
+        toggleText: () => ocr && setShowText((v) => !v),
+        findInPage: () => {
+          findRef.current?.focus();
+          findRef.current?.select();
+        },
+      }
+    : {};
+
   const saveQuad = async (pageId: string, quad: Quad | null) => {
     await saveEdits((edits) => {
       const quads = { ...(edits.quads ?? {}) };
@@ -207,7 +235,7 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
   return (
     <section className="document">
       <header className="doc-header">
-        <button className="ghost back" onClick={onBack}>
+        <button className="ghost back" data-shortcut="library" onClick={onBack}>
           보관함으로
         </button>
         <input
@@ -269,7 +297,7 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
         <div className="viewer">
           {current && (
             <div className="viewer-toolbar">
-              <button className="secondary" onClick={() => setEditingQuad(current.page)}>
+              <button className="secondary" data-shortcut="editQuad" onClick={() => setEditingQuad(current.page)}>
                 꼭짓점 고치기
               </button>
               <select aria-label="배치" value={current.page.layout} onChange={(e) => setLayout(current.page, e.target.value as PageLayout)}>
@@ -277,30 +305,43 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
                 <option value="spread">펼친 두 쪽</option>
                 <option value="trifold">3단 접지</option>
               </select>
-              <button className="secondary" onClick={() => rotatePage(current.page)}>
+              <button className="secondary" data-shortcut="rotatePage" onClick={() => rotatePage(current.page)}>
                 돌리기
               </button>
-              <button className="secondary" disabled={current.pageIndex === 0} onClick={() => movePage(current.page.id, -1)}>
+              <button
+                className="secondary"
+                data-shortcut="movePageUp"
+                disabled={current.pageIndex === 0}
+                onClick={() => movePage(current.page.id, -1)}
+              >
                 앞으로
               </button>
               <button
                 className="secondary"
+                data-shortcut="movePageDown"
                 disabled={current.pageIndex === detail.pages.length - 1}
                 onClick={() => movePage(current.page.id, 1)}
               >
                 뒤로
               </button>
-              <button className="danger" onClick={() => deletePage(current.page.id)}>
+              <button className="danger" data-shortcut="removePage" onClick={() => deletePage(current.page.id)}>
                 페이지 빼기
               </button>
               <span className="spacer" />
               <input
+                ref={findRef}
+                data-shortcut="findInPage"
                 className="find-input"
                 placeholder="페이지에서 찾기"
                 value={highlight}
                 onChange={(e) => setHighlight(e.target.value)}
               />
-              <button className={showText ? "secondary on" : "secondary"} disabled={!ocr} onClick={() => setShowText((v) => !v)}>
+              <button
+                className={showText ? "secondary on" : "secondary"}
+                data-shortcut="toggleText"
+                disabled={!ocr}
+                onClick={() => setShowText((v) => !v)}
+              >
                 글자
               </button>
             </div>
@@ -502,7 +543,7 @@ function OptionsPanel({
         필기 지우기
       </label>
       <p className="hint">옵션을 바꾸면 모든 페이지를 다시 처리합니다.</p>
-      <button className="secondary" onClick={onReprocess}>
+      <button className="secondary" data-shortcut="reprocess" onClick={onReprocess}>
         전체 다시 처리
       </button>
     </section>

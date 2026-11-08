@@ -48,6 +48,7 @@ export function ExportPanel({ documentId, isPamphlet, ready, onError }: Props) {
           <button
             key={format}
             className="secondary"
+            data-shortcut={format === "pdf" ? "exportPdf" : undefined}
             disabled={!ready || busy !== null}
             onClick={() => run(format, () => api.exportDocument(documentId, format))}
           >
