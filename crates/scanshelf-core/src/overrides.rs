@@ -49,6 +49,9 @@ pub struct Edits {
     /// 펼침은 하나, 3단 접지는 둘. 배치와 수가 맞지 않으면 처리가 무시한다(자동으로 찾는다)
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub folds: BTreeMap<Uuid, Vec<f32>>,
+    /// 접힌 선을 근처 자국에 붙이지 않고 준 위치 그대로 세로로 자를 페이지. 붙이기가 그림 경계 같은 다른 세로선에 끌려갈 때 쓴다
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exact_folds: Vec<Uuid>,
     /// 3단 접지의 면 순서. 문서에 놓일 순서대로 왼쪽부터 센 면 번호(0~2). 예: [2, 0, 1]은 오른쪽 면(표지)이 먼저
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub panel_order: BTreeMap<Uuid, Vec<u8>>,
@@ -61,6 +64,8 @@ pub struct Edits {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PageHints {
     pub folds: Vec<f32>,
+    /// 접힌 선을 준 위치 그대로 쓴다(자국에 붙이지 않는다)
+    pub exact: bool,
     pub panel_order: Vec<u8>,
 }
 
@@ -68,6 +73,7 @@ impl Edits {
     pub fn hints(&self, page: Uuid) -> PageHints {
         PageHints {
             folds: self.folds.get(&page).cloned().unwrap_or_default(),
+            exact: self.exact_folds.contains(&page),
             panel_order: self.panel_order.get(&page).cloned().unwrap_or_default(),
         }
     }

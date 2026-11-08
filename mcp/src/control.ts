@@ -137,8 +137,8 @@ export class ControlClient {
     await this.call("PUT", this.page(documentId, pageId, "layout"), { layout });
   }
 
-  async setFolds(documentId: string, pageId: string, folds: number[]): Promise<void> {
-    await this.call("PUT", this.page(documentId, pageId, "folds"), { folds });
+  async setFolds(documentId: string, pageId: string, folds: number[], exact = false): Promise<void> {
+    await this.call("PUT", this.page(documentId, pageId, "folds"), { folds, exact });
   }
 
   async setPanelOrder(documentId: string, pageId: string, order: number[]): Promise<void> {

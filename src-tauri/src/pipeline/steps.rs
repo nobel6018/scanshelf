@@ -123,7 +123,7 @@ pub fn correct_page(input: CorrectInput<'_>) -> Result<Corrected, String> {
     if layout == PageLayout::Spread && input.quad.is_some() && (flat.width() as f32) < flat.height() as f32 * SPREAD_MIN_ASPECT {
         checks.push(PageCheck::QuadOnePage);
     }
-    let (parts, split_check) = match manual_split(&flat, layout, &input.hints.folds) {
+    let (parts, split_check) = match manual_split(&flat, layout, &input.hints.folds, input.hints.exact) {
         Some(parts) => (parts, None),
         None => split_step_checked(flat, layout),
     };
@@ -148,8 +148,9 @@ pub fn correct_page(input: CorrectInput<'_>) -> Result<Corrected, String> {
     Ok(Corrected { parts: outputs, checks })
 }
 
-/// 손으로 고른 접힌 선으로 나눈다. 배치와 선 수가 맞지 않으면 None(자동으로 찾는다)
-fn manual_split(image: &RgbImage, layout: PageLayout, folds: &[f32]) -> Option<Vec<(PagePart, RgbImage)>> {
+/// 손으로 고른 접힌 선으로 나눈다. 배치와 선 수가 맞지 않으면 None(자동으로 찾는다).
+/// exact면 근처 자국에 붙이지 않고 준 위치에서 세로로 자른다
+fn manual_split(image: &RgbImage, layout: PageLayout, folds: &[f32], exact: bool) -> Option<Vec<(PagePart, RgbImage)>> {
     let expected = match layout {
         PageLayout::Single => return None,
         PageLayout::Spread => 1,
@@ -158,7 +159,15 @@ fn manual_split(image: &RgbImage, layout: PageLayout, folds: &[f32]) -> Option<V
     if folds.len() != expected {
         return None;
     }
-    let snapped = scanshelf_vision::snap_folds(image, folds);
+    let snapped = if exact {
+        let w = image.width() as f32;
+        folds
+            .iter()
+            .map(|&f| scanshelf_vision::Fold { x_top: f * w, x_bottom: f * w, confidence: 1.0, crease: 0.0, blank_width: 0.0 })
+            .collect()
+    } else {
+        scanshelf_vision::snap_folds(image, folds)
+    };
     let parts = scanshelf_vision::cut_at(image, &snapped);
     Some(match layout {
         PageLayout::Spread => vec![PagePart::Left, PagePart::Right].into_iter().zip(parts).collect(),
@@ -414,11 +423,23 @@ mod hint_tests {
     #[test]
     fn 손으로_고른_선은_배치와_수가_맞을_때만_쓴다() {
         let image = RgbImage::from_pixel(900, 300, image::Rgb([235; 3]));
-        let parts = manual_split(&image, PageLayout::Trifold, &[0.3, 0.6]).expect("두 선이면 나눈다");
+        let parts = manual_split(&image, PageLayout::Trifold, &[0.3, 0.6], false).expect("두 선이면 나눈다");
         assert_eq!(parts.iter().map(|(_, i)| i.width()).collect::<Vec<_>>(), vec![270, 270, 360]);
-        let spread = manual_split(&image, PageLayout::Spread, &[0.4]).expect("한 선이면 나눈다");
+        let spread = manual_split(&image, PageLayout::Spread, &[0.4], false).expect("한 선이면 나눈다");
         assert_eq!(spread.iter().map(|(p, _)| *p).collect::<Vec<_>>(), vec![PagePart::Left, PagePart::Right]);
-        assert!(manual_split(&image, PageLayout::Trifold, &[0.5]).is_none());
-        assert!(manual_split(&image, PageLayout::Single, &[0.5]).is_none());
+        assert!(manual_split(&image, PageLayout::Trifold, &[0.5], false).is_none());
+        assert!(manual_split(&image, PageLayout::Single, &[0.5], false).is_none());
+    }
+
+    #[test]
+    fn exact면_가까운_세로_경계에_끌려가지_않는다() {
+        // 0.5에 접힌 선(어두운 자국), 0.52에 더 센 밝기 계단(사진 가장자리 같은 것)
+        let image = RgbImage::from_fn(1000, 400, |x, _| match x {
+            498..=501 => image::Rgb([150; 3]),
+            520.. => image::Rgb([90; 3]),
+            _ => image::Rgb([235; 3]),
+        });
+        let exact = manual_split(&image, PageLayout::Spread, &[0.51], true).unwrap();
+        assert_eq!(exact[0].1.width(), 510);
     }
 }

@@ -131,6 +131,8 @@ export function parseRange(spec: string | undefined, total: number): [number, nu
 }
 
 const LAYOUT: Record<string, string> = { single: "한 장", spread: "펼친 두 쪽", trifold: "3단 접지" };
+/** "~(으)로" 조사를 붙인 배치 이름 */
+const LAYOUT_TO: Record<string, string> = { single: "한 장으로", spread: "펼친 두 쪽으로", trifold: "3단 접지로" };
 
 const BLOCK: Record<OcrBlock["kind"], string> = { title: "제목", paragraph: "문단", list: "목록", table: "표" };
 const round = (n: number) => Math.round(n * 1000) / 1000;
@@ -755,7 +757,7 @@ export function createServer(libraryDir: string, options: ServerOptions = {}): M
         } else {
           facts.push(`배치: ${LAYOUT[String(info.layout)] ?? info.layout}`);
           const folds = info.folds as number[] | undefined;
-          facts.push(folds?.length ? `고른 접힌 선: ${folds.join(", ")}` : "고른 접힌 선 없음(자동으로 찾음)");
+          facts.push(folds?.length ? `고른 접힌 선: ${folds.join(", ")}${info.exactFolds ? " (그 위치 그대로)" : " (근처 자국에 붙임)"}` : "고른 접힌 선 없음(자동으로 찾음)");
           const order = info.panelOrder as number[] | undefined;
           if (order?.length) facts.push(`면 순서: ${order.join(", ")}`);
         }
@@ -822,7 +824,7 @@ export function createServer(libraryDir: string, options: ServerOptions = {}): M
     async ({ id, page, layout }) =>
       onPage(id, page, async (d, src) => {
         await control.setLayout(d.manifest.id, src.ref.output.sourcePage, layout);
-        return text(`${d.manifest.name} ${photoText(src, page)}을 ${LAYOUT[layout]}로 바꿨습니다. ${AFTER}`);
+        return text(`${d.manifest.name} ${photoText(src, page)}을 ${LAYOUT_TO[layout]} 바꿨습니다. ${AFTER}`);
       }),
   );
 
@@ -832,18 +834,22 @@ export function createServer(libraryDir: string, options: ServerOptions = {}): M
       title: "scanshelf 접힌 선 고르기",
       description:
         "자동으로 못 나눴거나 잘못 나눈 펼침, 3단 접지의 접힌 선 위치를 직접 준다. get_page_view(view=flat) 그림 폭 기준 0~1, 왼쪽부터. " +
-        "spread는 하나, trifold는 둘. 대략 맞으면 Mac이 준 위치 ±0.03 안의 실제 접은 자국에 붙인다. 빈 목록이면 자동으로 돌아간다. " + AFTER,
+        "spread는 하나, trifold는 둘. 기본은 Mac이 준 위치 ±0.03 안의 실제 접은 자국에 붙인다(기운 선도 따라간다). " +
+        "접힌 선 옆에 사진 가장자리 같은 다른 세로선이 있으면 그쪽에 끌려갈 수 있다. 결과에서 면 가장자리가 옆 면 내용을 먹었으면 exact=true로 준 위치 그대로 자른다. 빈 목록이면 자동으로 돌아간다. " + AFTER,
       inputSchema: {
         id: ID,
         page: PAGE,
         folds: z.array(z.number().min(0).max(1)).max(2).describe("접힌 선 x 위치(0~1, 왼쪽부터). 예: 3단 접지 [0.34, 0.67]"),
+        exact: z.boolean().default(false).describe("true면 근처 자국에 붙이지 않고 준 위치에서 세로로 자른다"),
       },
       annotations: { ...WRITE, idempotentHint: true },
     },
-    async ({ id, page, folds }) =>
+    async ({ id, page, folds, exact }) =>
       onPage(id, page, async (d, src) => {
-        await control.setFolds(d.manifest.id, src.ref.output.sourcePage, folds);
-        const what = folds.length ? `접힌 선을 ${folds.join(", ")}에 뒀습니다` : "고른 접힌 선을 지웠습니다(자동으로 찾음)";
+        await control.setFolds(d.manifest.id, src.ref.output.sourcePage, folds, exact);
+        const what = folds.length
+          ? `접힌 선을 ${folds.join(", ")}에 뒀습니다(${exact ? "그 위치 그대로 자름" : "근처 접은 자국에 붙임"})`
+          : "고른 접힌 선을 지웠습니다(자동으로 찾음)";
         return text(`${d.manifest.name} ${photoText(src, page)}: ${what}. ${AFTER}`);
       }),
   );

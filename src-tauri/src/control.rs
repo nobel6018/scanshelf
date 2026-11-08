@@ -419,6 +419,7 @@ async fn set_layout(State(service): Shared, headers: HeaderMap, UrlPath((id, pag
     change_page(service, id, page, true, move |edits, _, page| {
         if page.layout != body.layout {
             edits.folds.remove(&page.id);
+            edits.exact_folds.retain(|p| *p != page.id);
             edits.panel_order.remove(&page.id);
         }
         edits.layouts.insert(page.id, body.layout);
@@ -430,6 +431,9 @@ async fn set_layout(State(service): Shared, headers: HeaderMap, UrlPath((id, pag
 #[derive(Deserialize)]
 struct FoldsBody {
     folds: Vec<f32>,
+    /// 근처 자국에 붙이지 않고 준 위치 그대로
+    #[serde(default)]
+    exact: bool,
 }
 
 /// 접힌 선 사이가 이보다 좁으면 받지 않는다(면 하나가 폭의 10%도 안 된다)
@@ -456,13 +460,17 @@ pub fn check_folds(layout: PageLayout, folds: &[f32]) -> Result<(), String> {
 async fn set_folds(State(service): Shared, headers: HeaderMap, UrlPath((id, page)): UrlPath<(String, String)>, Json(body): Json<FoldsBody>) -> ApiResult<serde_json::Value> {
     authorize(&service, &headers)?;
     change_page(service, id, page, true, move |edits, _, page| {
+        edits.exact_folds.retain(|p| *p != page.id);
         if body.folds.is_empty() {
             edits.folds.remove(&page.id);
-            return Ok(json!({ "folds": [] }));
+            return Ok(json!({ "folds": [], "exact": false }));
         }
         check_folds(page.layout, &body.folds).map_err(ApiError::bad_request)?;
         edits.folds.insert(page.id, body.folds.clone());
-        Ok(json!({ "folds": body.folds }))
+        if body.exact {
+            edits.exact_folds.push(page.id);
+        }
+        Ok(json!({ "folds": body.folds, "exact": body.exact }))
     })
     .await
 }
@@ -599,6 +607,7 @@ async fn reset_page(State(service): Shared, headers: HeaderMap, UrlPath((id, pag
         let id = page.id;
         edits.layouts.remove(&id);
         edits.folds.remove(&id);
+        edits.exact_folds.retain(|p| *p != id);
         edits.panel_order.remove(&id);
         edits.quads.remove(&id);
         edits.rotations.remove(&id);
@@ -723,6 +732,7 @@ async fn flat_image(State(service): Shared, headers: HeaderMap, UrlPath((id, pag
             "height": image.height(),
             "layout": page.layout,
             "folds": hints.folds,
+            "exactFolds": hints.exact,
             "panelOrder": hints.panel_order,
             "extraRotation": page.extra_rotation,
         });

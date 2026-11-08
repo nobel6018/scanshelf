@@ -371,6 +371,9 @@ fn fingerprint(dir: &Path, page: &Page, options: &ProcessOptions, hints: &PageHi
     // 손으로 고른 접힌 선과 면 순서. 없을 때 지문이 그대로여야 기존 페이지를 다시 처리하지 않는다
     if !hints.folds.is_empty() {
         input["folds"] = serde_json::json!(hints.folds);
+        if hints.exact {
+            input["exactFolds"] = serde_json::json!(true);
+        }
     }
     if !hints.panel_order.is_empty() {
         input["panelOrder"] = serde_json::json!(hints.panel_order);

@@ -23,7 +23,7 @@ Claude Code, Claude 데스크톱 같은 MCP 클라이언트가 scanshelf로 스�
 | `get_page_view` | 처리 중간 그림. `raw` 원본과 처리가 쓴 꼭짓점(자홍), `flat` 원근 보정과 회전 뒤 나누기 직전과 고른 접힌 선(빨강). 0.1 간격 청록 눈금. 앱 필요 | `id`, `page`, `view` |
 | `processing_status` | 처리 줄 상태와 다시 처리할 원본 수. `wait_seconds`면 끝날 때까지 기다린다 | `id`, `wait_seconds`(최대 300) |
 | `set_page_layout` | 배치(한 장, 펼침, 3단 접지). 전에 고른 접힌 선과 면 순서는 지운다. 앱 필요 | `id`, `page`, `layout` |
-| `set_page_folds` | 접힌 선 위치(flat 그림 폭 기준 0~1). 근처 자국에 붙인다. 빈 목록이면 자동 | `id`, `page`, `folds` |
+| `set_page_folds` | 접힌 선 위치(flat 그림 폭 기준 0~1). 근처 자국에 붙이고, `exact`면 그 위치 그대로 자른다. 빈 목록이면 자동 | `id`, `page`, `folds`, `exact` |
 | `set_panel_order` | 3단 접지 세 면의 순서(왼쪽 면 0). 예: `[2, 0, 1]` | `id`, `page`, `order` |
 | `set_page_quad` | 꼭짓점(raw 그림 기준 0~1). null이면 자동 | `id`, `page`, `quad` |
 | `move_page` | 원본 사진을 다른 사진 앞으로, 비우면 맨 뒤로 | `id`, `page`, `before_page` |
@@ -44,7 +44,7 @@ Claude Code, Claude 데스크톱 같은 MCP 클라이언트가 scanshelf로 스�
 4. 확인: `processing_status`(`wait_seconds`)로 다시 처리가 끝나기를 기다리고 `get_page_image`로 다시 봅니다. 나빠졌으면 `reset_page`
 5. 정리: 문제가 없으면 `set_page_reviewed`
 
-AI가 눈으로 고른 좌표는 2~3% 어긋나기 쉽습니다. 접힌 선은 Mac이 준 위치 ±0.03 안의 실제 접은 자국에 붙여 이 오차를 메웁니다(`fold.rs` `snap_folds`). 꼭짓점은 붙이지 않으므로 4번 확인이 특히 중요합니다.
+AI가 눈으로 고른 좌표는 어긋날 수 있어, 접힌 선은 기본으로 준 위치 ±0.03 안의 실제 접은 자국에 붙입니다(`fold.rs` `snap_folds`). 기운 선도 따라갑니다. 다만 접힌 선 바로 옆에 사진 가장자리 같은 센 세로선이 있으면 그쪽에 끌려갑니다. 데이터센터 박람회_1의 3단 접지가 그랬습니다. 접힌 선은 0.672인데 0.683의 사진 경계에 붙어, 가운데 면이 오른쪽 면 제목 첫 글자를 먹었습니다. 이럴 때는 `exact: true`로 준 위치에서 세로로 자릅니다(`edits.json` `exactFolds`). 꼭짓점은 붙이지 않으므로 4번 확인이 특히 중요합니다.
 
 예: 3단 접지 바깥 면을 다시 찍어 옛 사진 둘을 대체할 때
 `get_document(photos=true)` → 옛 사진 `remove_page` → 새 사진 `set_page_layout(trifold)` → 누웠으면 `rotate_page` → `move_page`로 앞으로 → 표지가 오른쪽이면 `set_panel_order([2, 0, 1])` → 나누지 못했으면 `get_page_view(flat)`를 보고 `set_page_folds` → `processing_status` → `get_page_image`

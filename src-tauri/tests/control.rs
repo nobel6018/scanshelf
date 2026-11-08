@@ -268,7 +268,10 @@ async fn 배치와_맞지_않는_접힌_선이나_면_순서는_받지_않는다
     assert_eq!(put(&h, &format!("{PAGE1}/folds"), json!({ "folds": [0.5] })).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(put(&h, &format!("{PAGE1}/panel-order"), json!({ "order": [0, 0, 1] })).await.0, StatusCode::BAD_REQUEST);
     // 제자리 순서와 빈 선은 지운다
+    put(&h, &format!("{PAGE1}/folds"), json!({ "folds": [0.3, 0.6], "exact": true })).await;
+    assert_eq!(h.edits().exact_folds, vec![uuid(PAGE1)]);
     put(&h, &format!("{PAGE1}/folds"), json!({ "folds": [0.3, 0.6] })).await;
+    assert!(h.edits().exact_folds.is_empty(), "exact 없이 다시 주면 붙이기로 돌아간다");
     put(&h, &format!("{PAGE1}/folds"), json!({ "folds": [] })).await;
     put(&h, &format!("{PAGE1}/panel-order"), json!({ "order": [0, 1, 2] })).await;
     let edits = h.edits();

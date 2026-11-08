@@ -74,8 +74,8 @@ const fakeApp = {
   async setLayout(d, p, layout) {
     this.calls.push(["layout", d, p, layout]);
   },
-  async setFolds(d, p, folds) {
-    this.calls.push(["folds", d, p, folds]);
+  async setFolds(d, p, folds, exact) {
+    this.calls.push(["folds", d, p, folds, exact]);
   },
   async setPanelOrder(d, p, order) {
     this.calls.push(["panelOrder", d, p, order]);
@@ -437,7 +437,7 @@ describe("처리 고치기", () => {
     const flat = await call("get_page_view", { id: IDS.pamphlet, page: 2, view: "flat" });
     assert.equal(flat.content.find((c) => c.type === "image").mimeType, "image/jpeg");
     assert.match(flat.text, /1, 2쪽이 나온 원본 사진, 나누기 직전 60x30/);
-    assert.match(flat.text, /배치: 3단 접지\n고른 접힌 선: 0.33, 0.66\n면 순서: 2, 0, 1/);
+    assert.match(flat.text, /배치: 3단 접지\n고른 접힌 선: 0.33, 0.66 \(근처 자국에 붙임\)\n면 순서: 2, 0, 1/);
     const raw = await call("get_page_view", { id: IDS.pamphlet, page: 3, view: "raw" });
     assert.match(raw.text, /3쪽 원본 사진, 원본 30x40\n꼭짓점: 없음\(사진 전체를 씀\)/);
     assert.deepEqual(fakeApp.calls, [
@@ -449,7 +449,12 @@ describe("처리 고치기", () => {
   test("쪽 번호를 원본 사진으로 바꿔 고치기를 부탁한다", async () => {
     fakeApp.calls.length = 0;
     await call("set_page_layout", { id: IDS.pamphlet, page: 1, layout: "trifold" });
-    await call("set_page_folds", { id: IDS.pamphlet, page: 2, folds: [0.34, 0.67] });
+    const folds = await call("set_page_folds", { id: IDS.pamphlet, page: 2, folds: [0.34, 0.67] });
+    assert.match(folds.text, /근처 접은 자국에 붙임/);
+    const exact = await call("set_page_folds", { id: IDS.pamphlet, page: 2, folds: [0.34, 0.67], exact: true });
+    assert.match(exact.text, /그 위치 그대로 자름/);
+    const single = await call("set_page_layout", { id: IDS.pamphlet, page: 3, layout: "single" });
+    assert.match(single.text, /한 장으로 바꿨습니다/);
     await call("set_panel_order", { id: IDS.pamphlet, page: 1, order: [2, 0, 1] });
     const quad = { topLeft: { x: 0.1, y: 0.1 }, topRight: { x: 0.9, y: 0.1 }, bottomRight: { x: 0.9, y: 0.9 }, bottomLeft: { x: 0.1, y: 0.9 } };
     await call("set_page_quad", { id: IDS.pamphlet, page: 3, quad });
@@ -463,7 +468,9 @@ describe("처리 고치기", () => {
     assert.match(reset.text, /1, 2쪽이 나온 원본 사진을 자동 처리로 되돌렸습니다.*processing_status/);
     assert.deepEqual(fakeApp.calls, [
       ["layout", IDS.pamphlet, P2, "trifold"],
-      ["folds", IDS.pamphlet, P2, [0.34, 0.67]],
+      ["folds", IDS.pamphlet, P2, [0.34, 0.67], false],
+      ["folds", IDS.pamphlet, P2, [0.34, 0.67], true],
+      ["layout", IDS.pamphlet, P1, "single"],
       ["panelOrder", IDS.pamphlet, P2, [2, 0, 1]],
       ["quad", IDS.pamphlet, P1, quad],
       ["quad", IDS.pamphlet, P1, null],
