@@ -68,7 +68,7 @@ export function ShortcutBadges({ screen }: { screen: Screen }) {
           {b.label}
         </kbd>
       ))}
-      <div className="shortcut-badges-hint">⌘에서 손을 떼고 ?를 누르면 전체 목록을 봅니다</div>
+      <div className="shortcut-badges-hint">⌘를 누른 채 /를 누르면 전체 목록을 봅니다</div>
     </div>
   );
 }

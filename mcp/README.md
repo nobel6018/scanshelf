@@ -14,6 +14,10 @@ Claude Code, Claude 데스크톱 같은 MCP 클라이언트에서 scanshelf로 �
 | `rotate_page` | 쪽 돌리기. 앱이 다시 처리한다. 앱 필요 |
 | `set_page_reviewed` | 확인함 두기, 되돌리기. 앱 필요 |
 | `update_document_tags` | 태그 더하기, 빼기. 앱 필요 |
+| `get_page_view` | 처리 중간 그림(원본과 꼭짓점, 나누기 직전과 접힌 선). 앱 필요 |
+| `processing_status` | 다시 처리가 끝났는지. 기다릴 수 있다. 앱 필요 |
+| `set_page_layout`, `set_page_folds`, `set_panel_order`, `set_page_quad` | 배치, 접힌 선, 3단 접지 면 순서, 꼭짓점 고치기. 앱 필요 |
+| `move_page`, `remove_page`, `restore_page`, `reset_page` | 원본 사진 옮기기, 빼기, 되살리기, 손 지정 지우기. 앱 필요 |
 
 ## 설치
 

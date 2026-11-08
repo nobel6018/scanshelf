@@ -107,6 +107,8 @@ export interface Doc {
   dir: string;
   /** edits를 적용한 manifest */
   manifest: Manifest;
+  /** Mac에서 뺀 원본 페이지(촬영 순서). 되살릴 수 있다 */
+  removed: Page[];
   tags: string[];
   pages: PageRef[];
   state: ProcessedState;
@@ -252,9 +254,11 @@ export async function loadDocument(dir: string): Promise<Doc | null> {
     (s) => s.isFile(),
     () => false,
   );
+  const deleted = new Set((edits.deletedPages ?? []).map(lower));
   return {
     dir,
     manifest,
+    removed: raw.pages.filter((p) => deleted.has(lower(p.id))),
     tags: normalizeTags(Array.isArray(edits.tags) ? edits.tags : []),
     pages,
     state: stateOf(manifest, processing, pages),

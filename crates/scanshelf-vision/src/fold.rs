@@ -12,6 +12,9 @@
 //!
 //! 두 선을 다 확신하지 못하면 나누지 않고 `Trifold::Whole`을 돌려준다.
 //!
+//! 자동으로 틀린 장은 사람이나 AI가 대략의 위치를 준다(`snap_folds`). 준 위치 근처 좁은 범위에서만 자국을 찾아 붙이고,
+//! 자국이 약하면 준 위치를 세로로 그대로 쓴다. 눈으로 고른 위치는 2~3% 어긋나기 쉬워 자국에 붙이는 편이 깔끔하다.
+//!
 //! @see docs/vision.md
 
 use image::RgbImage;
@@ -143,17 +146,63 @@ pub fn split_trifold(img: &RgbImage) -> Trifold {
 
 /// 주어진 두 선으로 자른다. 선이 기울었으면 면마다 네 꼭짓점(위아래 선 끝)을 직사각형으로 편다
 pub fn cut_panels(img: &RgbImage, folds: &Folds) -> [RgbImage; 3] {
+    let [a, b, c]: [RgbImage; 3] = cut_at(img, &[folds.left, folds.right]).try_into().expect("선 두 개면 세 면이다");
+    [a, b, c]
+}
+
+/// 준 위치(이미지 폭 대비 0~1) 근처 ±이만큼에서만 자국을 찾는다
+pub const SNAP_RANGE: f32 = 0.03;
+
+/// 사람이나 AI가 고른 접힌 선 위치(0~1, 왼쪽부터)를 근처의 접은 자국에 붙인다. 자국이 약하면 준 위치를 세로선으로 쓴다
+pub fn snap_folds(img: &RgbImage, hints: &[f32]) -> Vec<Fold> {
+    let (aw, ah) = fit_long_side(img.width(), img.height(), ANALYSIS_LONG_SIDE);
+    let small = downscale_area(img, aw, ah);
+    let g = luma(&small);
+    let paper = percentile(&g.data, 0.9).max(1.0);
+    let tilts: Vec<f32> = {
+        let n = (MAX_TILT_DEG / TILT_STEP_DEG).round() as i32;
+        (-n..=n).map(|i| i as f32 * TILT_STEP_DEG).collect()
+    };
+    let profiles: Vec<TiltProfile> = tilts.par_iter().map(|&deg| tilt_profile(&g, deg, paper)).collect();
+    let scale_x = img.width() as f32 / g.width as f32;
+    let half = img.height() as f32 / 2.0;
+    hints
+        .iter()
+        .map(|&hint| {
+            let c = best_fold(&profiles, g.width, (hint - SNAP_RANGE, hint + SNAP_RANGE), hint);
+            if c.confidence < MIN_FOLD_CONFIDENCE {
+                let x = hint * img.width() as f32;
+                return Fold { x_top: x, x_bottom: x, confidence: 0.0, crease: c.crease, blank_width: c.blank_width };
+            }
+            let tan = c.deg.to_radians().tan();
+            let cx = (c.x + 0.5) * scale_x - 0.5;
+            Fold { x_top: cx - half * tan, x_bottom: cx + half * tan, confidence: c.confidence, crease: c.crease, blank_width: c.blank_width }
+        })
+        .collect()
+}
+
+/// 선 여러 개(왼쪽부터)로 자른다. 펼친 두 쪽은 선 하나, 3단 접지는 둘이다
+pub fn cut_at(img: &RgbImage, folds: &[Fold]) -> Vec<RgbImage> {
     let (w, h) = (img.width(), img.height());
     let wf = w as f32;
     let clamp = |x: f32| x.clamp(1.0, wf - 1.0);
-    let (lt, lb) = (clamp(folds.left.x_top), clamp(folds.left.x_bottom));
-    let (rt, rb) = (clamp(folds.right.x_top).max(lt + 1.0), clamp(folds.right.x_bottom).max(lb + 1.0));
-    let straight = (lt - lb).abs() < 0.5 && (rt - rb).abs() < 0.5;
+    // 위, 아래 끝 x. 앞 선보다 적어도 1픽셀 오른쪽
+    let mut edges: Vec<(f32, f32)> = vec![(0.0, 0.0)];
+    for f in folds {
+        let (pt, pb) = *edges.last().expect("처음 값이 있다");
+        edges.push((clamp(f.x_top).max(pt + 1.0), clamp(f.x_bottom).max(pb + 1.0)));
+    }
+    edges.push((wf, wf));
+    let straight = folds.iter().all(|f| (f.x_top - f.x_bottom).abs() < 0.5);
     if straight {
-        let a = folds.left.center_x().round().clamp(1.0, wf - 2.0) as u32;
-        let b = (folds.right.center_x().round() as u32).clamp(a + 1, w - 1);
-        let crop = |x0: u32, x1: u32| image::imageops::crop_imm(img, x0, 0, x1 - x0, h).to_image();
-        return [crop(0, a), crop(a, b), crop(b, w)];
+        let xs: Vec<u32> = edges.iter().map(|(t, _)| (t.round() as u32).min(w)).collect();
+        return xs
+            .windows(2)
+            .map(|p| {
+                let (x0, x1) = (p[0], p[1].max(p[0] + 1).min(w));
+                image::imageops::crop_imm(img, x0.min(w - 1), 0, (x1 - x0).max(1), h).to_image()
+            })
+            .collect();
     }
     let hf = h as f32;
     let panel = |x0t: f32, x1t: f32, x1b: f32, x0b: f32| -> RgbImage {
@@ -172,7 +221,7 @@ pub fn cut_panels(img: &RgbImage, folds: &Folds) -> [RgbImage; 3] {
             image::imageops::crop_imm(img, x0, 0, x1 - x0, h).to_image()
         })
     };
-    [panel(0.0, lt, lb, 0.0), panel(lt, rt, rb, lb), panel(rt, wf, wf, rb)]
+    edges.windows(2).map(|p| panel(p[0].0, p[1].0, p[1].1, p[0].1)).collect()
 }
 
 /// 펼친 책 가운데의 접은 자국을 찾는다. 빈 띠는 보지 않는다. 표의 칸 사이도 글자 없는 띠라 그걸 믿으면 표가 잘린다.
@@ -503,6 +552,34 @@ mod tests {
             if in_text && line { Rgb([40, 40, 40]) } else { Rgb([235, 235, 230]) }
         });
         assert!(matches!(split_trifold(&img), Trifold::Whole { .. }));
+    }
+
+    #[test]
+    fn 준_위치_근처의_약한_자국에_붙인다() {
+        // 오른쪽 자국이 아주 약해 자동으로는 나누지 않는 장. 대략 준 위치(2% 어긋남)를 실제 자국에 붙인다
+        let img = trifold(1500, 1060, [500.0, 1000.0], 0.0, 0.05, 1.0);
+        let folds = snap_folds(&img, &[0.32, 0.68]);
+        assert!((folds[0].center_x() - 500.0).abs() < 6.0, "{folds:?}");
+        assert!((folds[1].center_x() - 1000.0).abs() < 6.0, "{folds:?}");
+    }
+
+    #[test]
+    fn 자국이_없으면_준_위치를_그대로_쓴다() {
+        let img = RgbImage::from_pixel(1000, 600, Rgb([235; 3]));
+        let folds = snap_folds(&img, &[0.4]);
+        assert_eq!(folds[0].x_top, 400.0);
+        assert_eq!(folds[0].x_bottom, 400.0);
+        let parts = cut_at(&img, &folds);
+        assert_eq!(parts.iter().map(|p| p.width()).collect::<Vec<_>>(), vec![400, 600]);
+    }
+
+    #[test]
+    fn 기운_선_여러_개로_자르면_높이가_같다() {
+        let img = trifold(1500, 1060, [500.0, 1000.0], 2.5, 0.2, 1.0);
+        let folds = snap_folds(&img, &[0.33, 0.67]);
+        let parts = cut_at(&img, &folds);
+        assert_eq!(parts.len(), 3);
+        assert!(parts.iter().all(|p| p.height() == 1060));
     }
 
     #[test]

@@ -31,6 +31,11 @@ before(async () => {
         res.statusCode = 404;
         return res.end(JSON.stringify({ error: "문서를 찾지 못했다: x" }));
       }
+      if (req.url.endsWith("/flat")) {
+        res.setHeader("content-type", "image/jpeg");
+        res.setHeader("x-scanshelf-view", JSON.stringify({ width: 3, folds: [0.5] }));
+        return res.end("jpeg-bytes");
+      }
       if (req.url === "/v1/review") return res.end(JSON.stringify({ documents: [{ documentId: "d", pages: [] }] }));
       res.end("{}");
     });
@@ -65,6 +70,14 @@ describe("ControlClient", () => {
         ["PUT", "/v1/documents/doc/pages/page/reviewed", `Bearer ${TOKEN}`, undefined, '{"reviewed":true}'],
       ],
     );
+  });
+
+  test("중간 그림은 바이트와 좌표 정보 머리를 받는다", async () => {
+    const client = new ControlClient(writeInfo(TOKEN));
+    const view = await client.view("doc", "page", "flat");
+    assert.equal(view.data.toString(), "jpeg-bytes");
+    assert.deepEqual(view.info, { width: 3, folds: [0.5] });
+    assert.equal(seen.at(-1).url, "/v1/documents/doc/pages/page/flat");
   });
 
   test("앱이 거절한 이유를 그대로 전한다", async () => {

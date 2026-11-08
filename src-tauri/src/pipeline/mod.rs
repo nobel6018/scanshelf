@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use image::RgbImage;
 use scanshelf_core::processing::{OutputPage, PIPELINE_VERSION, PagePart, ProcessOptions, Processing};
-use scanshelf_core::overrides::Edits;
+use scanshelf_core::overrides::{Edits, PageHints};
 use scanshelf_core::{Manifest, Page, PageLayout, Quad};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -165,6 +165,49 @@ fn load_state(cache: &Path, document_id: &str) -> PipelineState {
     read_json(&state_path(cache, document_id)).ok().flatten().unwrap_or_default()
 }
 
+/// AI가 보고 고칠 수 있게 처리 단계 중간 그림을 만든다(control.rs). 긴 변 이 값으로 줄인다
+pub const VIEW_SIDE: u32 = 2000;
+
+/// 처리가 실제로 쓴 꼭짓점. Mac이 다시 찾았으면 그 값, 테두리를 못 찾았으면 None(사진 전체)
+pub fn used_quad(cache: &Path, document_id: &str, page: &Page) -> Option<Quad> {
+    let state = load_state(cache, document_id);
+    match state.pages.get(&page.id) {
+        Some(s) if s.checks.contains(&steps::PageCheck::QuadMissing) => None,
+        Some(s) => s.detected_quad.or(page.quad),
+        None => page.quad,
+    }
+}
+
+/// 원본 사진(회전 메타데이터 적용). 꼭짓점 좌표(0~1)가 이 그림 기준이다
+pub fn raw_view(dir: &Path, page: &Page) -> Result<RgbImage, String> {
+    platform::decode_oriented(&dir.join(&page.raw), Some(VIEW_SIDE)).map_err(|e| e.to_string())
+}
+
+/// 원근 보정과 회전까지 한, 나누기 직전 그림. 접힌 선 좌표(0~1)가 이 그림 기준이다(steps::correct_page와 같은 순서)
+pub fn flat_view(dir: &Path, cache: &Path, document_id: &str, page: &Page) -> Result<RgbImage, String> {
+    let image = platform::decode_oriented(&dir.join(&page.raw), Some(VIEW_SIDE * 2)).map_err(|e| e.to_string())?;
+    let flat = steps::perspective_step(image, used_quad(cache, document_id, page))?;
+    let applied = load_state(cache, document_id).pages.get(&page.id).and_then(|s| s.applied_rotation);
+    let decided = move |_: &RgbImage| applied;
+    let flat = steps::rotate_step(flat, page.layout, &decided, page.extra_rotation);
+    let (w, h) = (flat.width(), flat.height());
+    let scale = (VIEW_SIDE as f32 / w.max(h) as f32).min(1.0);
+    Ok(if scale < 1.0 {
+        image::imageops::resize(&flat, (w as f32 * scale).round() as u32, (h as f32 * scale).round() as u32, image::imageops::FilterType::Triangle)
+    } else {
+        flat
+    })
+}
+
+/// JPEG 바이트. 화면 대신 MCP로 보낼 때 쓴다
+pub fn jpeg_bytes(image: &RgbImage, quality: u8) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality)
+        .encode_image(image)
+        .map_err(|e| e.to_string())?;
+    Ok(bytes)
+}
+
 /// Mac이 다시 감지한 꼭짓점. 화면이 iPhone 감지값이 없는 페이지에 보여 준다
 pub fn detected_quads(cache: &Path, document_id: &str) -> HashMap<Uuid, Quad> {
     load_state(cache, document_id)
@@ -303,7 +346,7 @@ fn pick_rectangle(rects: &[Quad], aspect: f64, layout: PageLayout) -> Option<Qua
 }
 
 /// 이 값이 바뀌면 페이지를 다시 처리한다
-fn fingerprint(dir: &Path, page: &Page, options: &ProcessOptions) -> String {
+fn fingerprint(dir: &Path, page: &Page, options: &ProcessOptions, hints: &PageHints) -> String {
     let raw = dir.join(&page.raw);
     let (len, modified) = fs::metadata(&raw)
         .map(|m| {
@@ -325,6 +368,13 @@ fn fingerprint(dir: &Path, page: &Page, options: &ProcessOptions) -> String {
         "extraRotation": page.extra_rotation,
         "options": options,
     });
+    // 손으로 고른 접힌 선과 면 순서. 없을 때 지문이 그대로여야 기존 페이지를 다시 처리하지 않는다
+    if !hints.folds.is_empty() {
+        input["folds"] = serde_json::json!(hints.folds);
+    }
+    if !hints.panel_order.is_empty() {
+        input["panelOrder"] = serde_json::json!(hints.panel_order);
+    }
     // 믿지 못할 테두리로 이미 처리한 장(v0.3.1까지)을 다시 처리하게 한다. 정상 장은 지문이 그대로라 다시 하지 않는다.
     // 원본을 열지 않으려고 iPhone 사진 비율(세로 4:3)로 판단한다. 실제 선택은 choose_quad가 원본 비율로 한다
     if page.quad.is_some_and(|q| !q.is_plausible(IPHONE_PHOTO_ASPECT)) {
@@ -337,6 +387,7 @@ fn page_is_current(
     dir: &Path,
     page: &Page,
     options: &ProcessOptions,
+    hints: &PageHints,
     processing: &Processing,
     state: &PipelineState,
 ) -> bool {
@@ -350,7 +401,7 @@ fn page_is_current(
     let fingerprint_ok = state
         .pages
         .get(&page.id)
-        .is_some_and(|s| s.fingerprint == fingerprint(dir, page, options));
+        .is_some_and(|s| s.fingerprint == fingerprint(dir, page, options, hints));
     versions_ok && fingerprint_ok
 }
 
@@ -364,7 +415,7 @@ pub fn stale_pages(dir: &Path, cache: &Path, manifest: &Manifest, processing: &P
     let stale = manifest
         .pages
         .iter()
-        .filter(|page| !page_is_current(dir, page, &page_options(&defaults, &edits, page.id), processing, &state))
+        .filter(|page| !page_is_current(dir, page, &page_options(&defaults, &edits, page.id), &edits.hints(page.id), processing, &state))
         .count();
     // 지운 페이지의 출력이 남아 있으면 정리하러 한 번 더 돌아야 한다
     stale + usize::from(orphan)
@@ -428,7 +479,7 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
             let options = page_options(&defaults, &edits, page.id);
             let current = {
                 let processing = load_processing(dir);
-                page_is_current(dir, page, &options, &processing, &state)
+                page_is_current(dir, page, &options, &edits.hints(page.id), &processing, &state)
             };
             let skip = if pass == 0 { current && !ctx.force } else { !redo.contains(&page.id) };
             if skip {
@@ -467,6 +518,7 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
                 extra_rotation: page.extra_rotation,
                 // 사람이 배치를 고른 장은 그대로 둔다
                 auto_spread: spread_document && !edits.layouts.contains_key(&page.id),
+                hints: &edits.hints(page.id),
             })?;
             if doubtful.get() {
                 checks.push(steps::PageCheck::RotationDoubtful);
@@ -495,7 +547,7 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
             state.pages.insert(
                 page.id,
                 PageState {
-                    fingerprint: fingerprint(dir, page, &options),
+                    fingerprint: fingerprint(dir, page, &options, &edits.hints(page.id)),
                     detected_quad,
                     rotation: decided.get(),
                     applied_rotation: if doubtful.get() { Some(0) } else { decided.get().or(document_turn) },

@@ -1,6 +1,6 @@
 import { SCREEN_LABEL, shortcutLabel, shortcutsFor, type Screen } from "../shortcuts";
 
-// 단축키 목록. ⌘를 길게 누르면 누르는 동안, ? 키나 도움말 메뉴로 열면 Esc나 바깥을 누를 때까지 보인다.
+// 단축키 목록. ⌘를 길게 누르면 누르는 동안, ⌘/나 도움말 메뉴로 열면 Esc나 바깥을 누를 때까지 보인다.
 // 목록은 src/shortcuts.ts SHORTCUTS를 그대로 읽어 실제 단축키와 어긋나지 않는다.
 // @see docs/shortcuts-and-deep-links.md
 

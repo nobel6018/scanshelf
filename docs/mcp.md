@@ -20,8 +20,34 @@ Claude Code, Claude 데스크톱 같은 MCP 클라이언트가 scanshelf로 스�
 | `rotate_page` | 쪽을 시계 방향으로 더 돌리고 다시 처리하게 한다(`edits.rotations`). 앱 필요 | `id`, `page`, `degrees`(90, 180, 270) |
 | `set_page_reviewed` | 확인함으로 두거나 되돌린다(`edits.reviewed`). 앱 필요 | `id`, `page`, `reviewed`(기본 true) |
 | `update_document_tags` | 태그 더하기, 빼기. 사람이 고친 태그(`tagsByUser`)로 남는다. 앱 필요 | `id`, `add`, `remove` |
+| `get_page_view` | 처리 중간 그림. `raw` 원본과 처리가 쓴 꼭짓점(자홍), `flat` 원근 보정과 회전 뒤 나누기 직전과 고른 접힌 선(빨강). 0.1 간격 청록 눈금. 앱 필요 | `id`, `page`, `view` |
+| `processing_status` | 처리 줄 상태와 다시 처리할 원본 수. `wait_seconds`면 끝날 때까지 기다린다 | `id`, `wait_seconds`(최대 300) |
+| `set_page_layout` | 배치(한 장, 펼침, 3단 접지). 전에 고른 접힌 선과 면 순서는 지운다. 앱 필요 | `id`, `page`, `layout` |
+| `set_page_folds` | 접힌 선 위치(flat 그림 폭 기준 0~1). 근처 자국에 붙인다. 빈 목록이면 자동 | `id`, `page`, `folds` |
+| `set_panel_order` | 3단 접지 세 면의 순서(왼쪽 면 0). 예: `[2, 0, 1]` | `id`, `page`, `order` |
+| `set_page_quad` | 꼭짓점(raw 그림 기준 0~1). null이면 자동 | `id`, `page`, `quad` |
+| `move_page` | 원본 사진을 다른 사진 앞으로, 비우면 맨 뒤로 | `id`, `page`, `before_page` |
+| `remove_page`, `restore_page` | 원본 사진 빼기(원본 파일은 남음), 되살리기 | `id`, `page` / `id`, `photo_id` |
+| `reset_page` | 그 사진의 배치, 접힌 선, 면 순서, 꼭짓점, 돌리기, 필터, 확인함을 지우고 자동 처리로 | `id`, `page` |
 
 읽기 도구에는 `readOnlyHint: true`, 쓰기 도구에는 `readOnlyHint: false, destructiveHint: false`를 붙입니다. 클라이언트가 읽기는 자동으로, 쓰기는 물어보고 실행하도록 도구마다 다르게 승인할 수 있습니다.
+
+`page`는 늘 출력 쪽 번호이고, 고치기 도구는 그 쪽이 나온 원본 사진 전체에 적용합니다. 펼침과 3단 접지는 같은 사진의 쪽이 함께 바뀌고, 결과 문장이 그 쪽 번호를 알려 줍니다. `get_document`에 `photos: true`를 주면 원본 사진마다 배치와 쪽 번호를, 뺀 사진이 있으면 그 id를 보여 줍니다.
+
+### AI가 고치는 흐름
+
+로직이 기본값을 만들고, 틀린 장은 AI가 그림을 보고 고칩니다. 모든 경우를 규칙으로 맞추려 기준값을 계속 바꾸면 다른 장이 틀어지기 때문입니다. 흐름은 이렇습니다.
+
+1. 틀린 쪽 찾기: `list_review_pages`(화면의 "!") 또는 사용자가 짚은 쪽
+2. 보기: `get_page_image`로 결과, `get_page_view`로 중간 그림(`raw` 꼭짓점, `flat` 나누기 직전)
+3. 고치기: `set_page_layout`, `set_page_folds`, `set_panel_order`, `set_page_quad`, `rotate_page`, `move_page`, `remove_page`
+4. 확인: `processing_status`(`wait_seconds`)로 다시 처리가 끝나기를 기다리고 `get_page_image`로 다시 봅니다. 나빠졌으면 `reset_page`
+5. 정리: 문제가 없으면 `set_page_reviewed`
+
+AI가 눈으로 고른 좌표는 2~3% 어긋나기 쉽습니다. 접힌 선은 Mac이 준 위치 ±0.03 안의 실제 접은 자국에 붙여 이 오차를 메웁니다(`fold.rs` `snap_folds`). 꼭짓점은 붙이지 않으므로 4번 확인이 특히 중요합니다.
+
+예: 3단 접지 바깥 면을 다시 찍어 옛 사진 둘을 대체할 때
+`get_document(photos=true)` → 옛 사진 `remove_page` → 새 사진 `set_page_layout(trifold)` → 누웠으면 `rotate_page` → `move_page`로 앞으로 → 표지가 오른쪽이면 `set_panel_order([2, 0, 1])` → 나누지 못했으면 `get_page_view(flat)`를 보고 `set_page_folds` → `processing_status` → `get_page_image`
 
 ### 검색 조건
 
@@ -101,9 +127,13 @@ MCP는 edits.json에 직접 쓰지 않고 Mac 앱에 부탁합니다. 이유는 
 | `POST /v1/documents/{id}/pages/{page}/rotate` | `{"degrees": 90 \| 180 \| 270}`. 각도를 더해 360이면 지우고, 처리 줄에 넣는다 |
 | `PUT /v1/documents/{id}/pages/{page}/reviewed` | `{"reviewed": bool}`. 같은 쪽은 한 번만 남는다 |
 | `PATCH /v1/documents/{id}/tags` | `{"add": [...], "remove": [...]}`. `tagger::set_tags_in_dir`로 써 `tagsByUser`가 켜진다 |
+| `GET /v1/documents/{id}/status` | `{"job": {"state": "queued" \| "running" \| "failed", ...} \| null, "stalePages": n}` |
+| `GET /v1/documents/{id}/pages/{page}/raw`, `/flat` | JPEG. 좌표 정보는 `x-scanshelf-view` 머리(JSON). 그림은 `pipeline::raw_view`, `flat_view`가 처리와 같은 꼭짓점(`used_quad`)과 회전으로 만든다 |
+| `PUT .../layout`, `.../folds`, `.../panel-order`, `.../quad` | 배치, 접힌 선(`check_folds`: 배치와 수, 0.1 이상 간격), 면 순서(0, 1, 2 순열, 3단 접지만), 꼭짓점(`Quad::is_plausible`). 처리 줄에 넣는다 |
+| `POST .../move`, `.../remove`, `.../restore`, `.../reset` | 원본 사진 순서(`pageOrder`), 빼기(마지막 한 장은 못 뺌), 되살리기, 손 지정 지우기 |
 
 - 쓰기는 모두 화면 저장, AI 태그와 같은 `EDITS_LOCK` 안에서 합니다. 쓴 뒤 `edits-changed` 이벤트를 보내고(태그는 `tags-changed`도), 화면(`src/App.tsx`)이 이 이벤트로 열린 문서를 다시 읽어 옛 edits로 덮지 않게 합니다. 이벤트가 닿기 전 250ms 안에 사람이 같은 문서를 고치면 MCP가 쓴 칸이 덮일 수 있습니다. 둘이 같은 순간에 같은 문서를 고치는 일은 드물어 받아들였습니다
-- 꼭짓점은 받지 않습니다. 틀려도 그림이 그럴듯하게 나와 사람이 알아채기 어렵습니다. 꼭짓점이 문제인 쪽은 `list_review_pages`가 앱 링크를 주고 사람이 고칩니다
+- 꼭짓점도 받습니다. 처음에는 틀려도 그림이 그럴듯하게 나와 알아채기 어렵다는 이유로 뺐지만, 결과를 다시 보는 단계(`processing_status`, `get_page_image`)와 `reset_page`를 두고 넣었습니다. 처리가 사각형으로 보지 않는 값은 앱이 받지 않습니다
 - 쪽 번호는 MCP가 원본 페이지 id로 바꿔 보냅니다. 돌리기와 확인함은 원본 사진 단위라 펼침과 3단 접지는 같은 사진의 쪽이 함께 바뀌고, 도구 결과가 그 쪽 번호를 알려 줍니다
 - 브라우저가 보낸 요청(`Origin` 머리)은 토큰이 맞아도 거절합니다. Wi-Fi 전송 서버(`transfer/server.rs`)와 따로 둔 것은 그쪽이 같은 네트워크에 열리고 iPhone 토큰을 쓰기 때문입니다
 - 앱이 끝나면 `control.json`을 지웁니다(`pid`가 자기 것일 때만). 강제 종료로 파일이 남아도 포트가 닫혀 있어 MCP는 "앱이 켜져 있지 않다"고 답합니다. 앱이 다시 켜져 토큰이 바뀌는 사이에 부르면 401을 받고 잠시 뒤 다시 하라고 답합니다
@@ -120,6 +150,7 @@ OCR 본문과 AI 정리는 종이에서 읽은 글자라 누구든 써 넣을 �
 - 페이지 순서를 바꾼 뒤 다시 처리하기 전이면, 앱 검색 결과의 쪽 번호(`processing.json` 순서)와 이 서버의 쪽 번호(edits 순서)가 다를 수 있습니다
 - 검색은 요청마다 모든 문서의 manifest와 OCR 파일을 훑습니다. 문서 수백 개, 쪽 수천 개까지는 충분히 빠르지만 그보다 커지면 앱의 SQLite 색인을 읽는 쪽을 검토합니다
 - 형태소 분석이 없어 활용형("냉각한다"로 "냉각하는" 찾기)은 찾지 못합니다. 앱 검색과 같은 한계입니다. 다른 표기는 `synonyms`로 함께 찾습니다
+- 화면은 `folds`, `panelOrder`를 보여 주지 않습니다. 화면에서 배치를 바꾸면 처리는 수가 맞지 않는 접힌 선을 무시하지만 값은 남습니다
 - `layout`은 OCR 블록이 있는 쪽만 위치를 줍니다. 블록 없이 본문만 있는 옛 OCR은 "OCR 글자가 없습니다"로 보입니다
 - 메모 칸은 없습니다. 앱에 메모 칸이 없어서이고, 필요하면 앱에 먼저 만듭니다
 - 원본 사진(`raw/*.heic`)과 내보낸 파일(`exports/`)은 돌려주지 않습니다
@@ -131,4 +162,4 @@ cd mcp
 npm test
 ```
 
-실제 스캔은 쓰지 않습니다. `fixtures/`의 manifest 예시에 합성 edits, 처리 결과, OCR, AI 정리, 단색 JPEG를 붙인 임시 보관함(`mcp/test/library-fixture.mjs`)을 만들고, edits 적용(`crates/scanshelf-core/tests/edits.rs`와 같은 경우), 태그 규칙, 검색 규칙, 그림 줄이기와 잘라 내기, 도구 10개를 MCP 클라이언트로 불러 확인합니다. 쓰기 도구는 가짜 앱으로 원본 페이지 id가 맞게 가는지 보고, 도구를 모두 부른 뒤 보관함 파일 내용과 수정 시각이 그대로인지도 봅니다(MCP가 직접 쓰지 않음). `control.test.mjs`는 쓰기 통로 클라이언트를 진짜 HTTP로 확인하고, `PIPELINE_VERSION`이 `processing.rs`와 같은지 봅니다. 앱 쪽 통로는 `src-tauri/tests/control.rs`가 localhost에 띄워 토큰, 브라우저 거절, 확인 필요 목록, 돌리기, 확인함, 태그를 확인합니다. CI는 `.github/workflows/build.yml`의 `mcp` 작업입니다.
+실제 스캔은 쓰지 않습니다. `fixtures/`의 manifest 예시에 합성 edits, 처리 결과, OCR, AI 정리, 단색 JPEG를 붙인 임시 보관함(`mcp/test/library-fixture.mjs`)을 만들고, edits 적용(`crates/scanshelf-core/tests/edits.rs`와 같은 경우), 태그 규칙, 검색 규칙, 그림 줄이기와 잘라 내기, 도구 20개를 MCP 클라이언트로 불러 확인합니다. 쓰기 도구는 가짜 앱으로 원본 페이지 id가 맞게 가는지, 틀린 값은 앱에 보내지 않는지 보고, 도구를 모두 부른 뒤 보관함 파일 내용과 수정 시각이 그대로인지도 봅니다(MCP가 직접 쓰지 않음). `control.test.mjs`는 쓰기 통로 클라이언트를 진짜 HTTP로 확인하고, `PIPELINE_VERSION`이 `processing.rs`와 같은지 봅니다. 앱 쪽 통로는 `src-tauri/tests/control.rs`가 localhost에 띄워 토큰, 브라우저 거절, 확인 필요 목록, 돌리기, 확인함, 태그, 배치, 접힌 선, 면 순서, 꼭짓점, 옮기기, 빼기, 되살리기, 되돌리기, 처리 상태, 중간 그림을 확인합니다. 손으로 고른 나누기와 면 순서는 `pipeline/steps.rs` `hint_tests`와 `fold.rs` 테스트가 봅니다. CI는 `.github/workflows/build.yml`의 `mcp` 작업입니다.

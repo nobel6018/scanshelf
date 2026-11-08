@@ -29,6 +29,8 @@
 | `split::cut(img, &Gutter)` | 주어진 접힌 선으로 자르기(화면에서 사용자가 선을 고쳤을 때) |
 | `find_folds(img) -> Folds` | 3단 접지의 접힌 선 두 개(선마다 위쪽 x, 아래쪽 x, 신뢰도, 자국 세기, 빈 띠 폭)와 전체 신뢰도 |
 | `split_trifold(img) -> Trifold` | `Panels { panels: [왼쪽, 가운데, 오른쪽], folds }` 또는 `Whole { folds }` |
+| `snap_folds(img, hints) -> Vec<Fold>` | 사람이나 AI가 고른 위치(0~1) ±`SNAP_RANGE`(0.03) 안의 접은 자국에 붙인다. 자국이 약하면 준 위치를 세로선으로 |
+| `cut_at(img, folds) -> Vec<RgbImage>` | 선 여러 개(왼쪽부터)로 자른다. 기운 선은 면마다 사다리꼴을 직사각형으로 편다 |
 | `fold::cut_panels(img, &Folds)` | 주어진 두 선으로 세 면 자르기 |
 | `dewarp(img, Dewarp, &Models) -> DewarpResult` | 곡면 보정. 모델이 없거나 `Off`면 입력 그대로, `applied = false` |
 | `apply_filter(img, Filter)` | `Original`, `Enhanced`, `Grayscale`, `BlackWhite` |

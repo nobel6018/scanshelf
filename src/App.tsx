@@ -41,7 +41,7 @@ interface Notice {
 
 export default function App() {
   const [route, setRoute] = useState<Route>({ view: "library" });
-  /** 단축키 보기. hold는 ⌘를 누르는 동안 단추 위 배지, sticky는 ? 키나 메뉴로 연 전체 목록 */
+  /** 단축키 보기. hold는 ⌘를 누르는 동안 단추 위 배지, sticky는 ⌘/나 메뉴로 연 전체 목록 */
   const [overlay, setOverlay] = useState<"hold" | "sticky" | null>(null);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [error, setError] = useState<string | null>(null);

@@ -7,7 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ControlClient } from "../dist/control.js";
 import { jpegSize } from "../dist/image.js";
 import { createServer } from "../dist/server.js";
-import { buildLibrary, IDS, PAGE_IDS } from "./library-fixture.mjs";
+import { buildLibrary, IDS, PAGE_IDS, solidJpeg } from "./library-fixture.mjs";
 
 /** 보관함의 모든 파일 내용과 수정 시각. 도구를 부른 뒤에도 같아야 한다(읽기 전용) */
 function snapshot(dir) {
@@ -57,6 +57,45 @@ const fakeApp = {
     this.calls.push(["tags", documentId, add, remove]);
     return ["분야/냉각/액침", ...add];
   },
+  async view(documentId, pageId, kind) {
+    this.calls.push(["view", documentId, pageId, kind]);
+    const info =
+      kind === "raw"
+        ? { width: 30, height: 40, quad: null, quadSource: "none" }
+        : { width: 60, height: 30, layout: "trifold", folds: [0.33, 0.66], panelOrder: [2, 0, 1] };
+    return { data: Buffer.from(solidJpeg(info.width, info.height)), info };
+  },
+  /** 처리 상태를 차례로 돌려준다. 다 쓰면 마지막 것을 계속 */
+  statuses: [],
+  async status(documentId) {
+    this.calls.push(["status", documentId]);
+    return this.statuses.length > 1 ? this.statuses.shift() : this.statuses[0] ?? { job: null, stalePages: 0 };
+  },
+  async setLayout(d, p, layout) {
+    this.calls.push(["layout", d, p, layout]);
+  },
+  async setFolds(d, p, folds) {
+    this.calls.push(["folds", d, p, folds]);
+  },
+  async setPanelOrder(d, p, order) {
+    this.calls.push(["panelOrder", d, p, order]);
+  },
+  async setQuad(d, p, quad) {
+    this.calls.push(["quad", d, p, quad]);
+  },
+  async move(d, p, before) {
+    this.calls.push(["move", d, p, before]);
+    return [];
+  },
+  async remove(d, p) {
+    this.calls.push(["remove", d, p]);
+  },
+  async restore(d, p) {
+    this.calls.push(["restore", d, p]);
+  },
+  async reset(d, p) {
+    this.calls.push(["reset", d, p]);
+  },
 };
 
 /** 앱이 꺼진 서버(control.json 없음) */
@@ -77,7 +116,7 @@ before(async () => {
   root = buildLibrary();
   before_ = snapshot(root);
   const [a, b] = InMemoryTransport.createLinkedPair();
-  await createServer(root, { control: fakeApp }).connect(a);
+  await createServer(root, { control: fakeApp, pollMs: 1 }).connect(a);
   client = new Client({ name: "test", version: "0" });
   await client.connect(b);
 });
@@ -89,19 +128,31 @@ after(async () => {
 describe("서버", () => {
   test("도구와 안내문", async () => {
     const { tools } = await client.listTools();
-    assert.deepEqual(tools.map((t) => t.name).sort(), [
+    const writes = [
+      "move_page",
+      "remove_page",
+      "reset_page",
+      "restore_page",
+      "rotate_page",
+      "set_page_folds",
+      "set_page_layout",
+      "set_page_quad",
+      "set_page_reviewed",
+      "set_panel_order",
+      "update_document_tags",
+    ];
+    const reads = [
       "get_document",
       "get_page_image",
+      "get_page_view",
       "list_documents",
       "list_review_pages",
       "list_sessions",
       "list_tags",
-      "rotate_page",
+      "processing_status",
       "search_documents",
-      "set_page_reviewed",
-      "update_document_tags",
-    ]);
-    const writes = ["rotate_page", "set_page_reviewed", "update_document_tags"];
+    ];
+    assert.deepEqual(tools.map((t) => t.name).sort(), [...reads, ...writes].sort());
     for (const t of tools) {
       assert.equal(t.annotations?.readOnlyHint, !writes.includes(t.name), t.name);
       if (writes.includes(t.name)) assert.equal(t.annotations?.destructiveHint, false, t.name);
@@ -358,6 +409,13 @@ describe("확인 필요 쪽과 쓰기", () => {
     const off = await connectWithoutApp();
     for (const [name, args] of [
       ["list_review_pages", {}],
+      ["get_page_view", { id: IDS.pamphlet, page: 1, view: "flat" }],
+      ["processing_status", { id: IDS.pamphlet }],
+      ["set_page_layout", { id: IDS.pamphlet, page: 1, layout: "trifold" }],
+      ["set_page_folds", { id: IDS.pamphlet, page: 1, folds: [0.5] }],
+      ["move_page", { id: IDS.pamphlet, page: 1 }],
+      ["remove_page", { id: IDS.pamphlet, page: 1 }],
+      ["reset_page", { id: IDS.pamphlet, page: 1 }],
       ["rotate_page", { id: IDS.pamphlet, page: 1, degrees: 90 }],
       ["set_page_reviewed", { id: IDS.pamphlet, page: 1 }],
       ["update_document_tags", { id: IDS.pamphlet, add: ["a"] }],
@@ -367,6 +425,99 @@ describe("확인 필요 쪽과 쓰기", () => {
       assert.match(r.content[0].text, /Mac scanshelf 앱이 켜져 있지 않아/, name);
     }
     await off.close();
+  });
+});
+
+describe("처리 고치기", () => {
+  const P1 = PAGE_IDS.P1;
+  const P2 = PAGE_IDS.P2;
+
+  test("중간 그림은 이미지와 좌표 정보를 준다", async () => {
+    fakeApp.calls.length = 0;
+    const flat = await call("get_page_view", { id: IDS.pamphlet, page: 2, view: "flat" });
+    assert.equal(flat.content.find((c) => c.type === "image").mimeType, "image/jpeg");
+    assert.match(flat.text, /1, 2쪽이 나온 원본 사진, 나누기 직전 60x30/);
+    assert.match(flat.text, /배치: 3단 접지\n고른 접힌 선: 0.33, 0.66\n면 순서: 2, 0, 1/);
+    const raw = await call("get_page_view", { id: IDS.pamphlet, page: 3, view: "raw" });
+    assert.match(raw.text, /3쪽 원본 사진, 원본 30x40\n꼭짓점: 없음\(사진 전체를 씀\)/);
+    assert.deepEqual(fakeApp.calls, [
+      ["view", IDS.pamphlet, P2, "flat"],
+      ["view", IDS.pamphlet, P1, "raw"],
+    ]);
+  });
+
+  test("쪽 번호를 원본 사진으로 바꿔 고치기를 부탁한다", async () => {
+    fakeApp.calls.length = 0;
+    await call("set_page_layout", { id: IDS.pamphlet, page: 1, layout: "trifold" });
+    await call("set_page_folds", { id: IDS.pamphlet, page: 2, folds: [0.34, 0.67] });
+    await call("set_panel_order", { id: IDS.pamphlet, page: 1, order: [2, 0, 1] });
+    const quad = { topLeft: { x: 0.1, y: 0.1 }, topRight: { x: 0.9, y: 0.1 }, bottomRight: { x: 0.9, y: 0.9 }, bottomLeft: { x: 0.1, y: 0.9 } };
+    await call("set_page_quad", { id: IDS.pamphlet, page: 3, quad });
+    await call("set_page_quad", { id: IDS.pamphlet, page: 3, quad: null });
+    const moved = await call("move_page", { id: IDS.pamphlet, page: 3, before_page: 1 });
+    assert.match(moved.text, /3쪽 원본 사진을 1쪽이 나온 사진 앞으로 옮겼습니다/);
+    await call("move_page", { id: IDS.pamphlet, page: 1 });
+    const removed = await call("remove_page", { id: IDS.pamphlet, page: 3 });
+    assert.match(removed.text, /restore_page로 되살림/);
+    const reset = await call("reset_page", { id: IDS.pamphlet, page: 2 });
+    assert.match(reset.text, /1, 2쪽이 나온 원본 사진을 자동 처리로 되돌렸습니다.*processing_status/);
+    assert.deepEqual(fakeApp.calls, [
+      ["layout", IDS.pamphlet, P2, "trifold"],
+      ["folds", IDS.pamphlet, P2, [0.34, 0.67]],
+      ["panelOrder", IDS.pamphlet, P2, [2, 0, 1]],
+      ["quad", IDS.pamphlet, P1, quad],
+      ["quad", IDS.pamphlet, P1, null],
+      ["move", IDS.pamphlet, P1, P2],
+      ["move", IDS.pamphlet, P2, null],
+      ["remove", IDS.pamphlet, P1],
+      ["reset", IDS.pamphlet, P2],
+    ]);
+  });
+
+  test("뺀 원본 사진은 get_document에 보이고 id 앞부분으로 되살린다", async () => {
+    const doc = await call("get_document", { id: IDS.book, text: false, photos: true });
+    assert.match(doc.text, new RegExp(`- 뺀 원본 사진 1장\\(restore_page로 되살림\\): ${PAGE_IDS.B[1]} \\(한 장, `));
+    assert.match(doc.text, /## 원본 사진\n\n- 사진 1: 1쪽, 한 장 \(원본 id b0000000-0000-4000-8000-00000000000a\)\n- 사진 2: 2쪽, 한 장/);
+    fakeApp.calls.length = 0;
+    const restored = await call("restore_page", { id: IDS.book, photo_id: PAGE_IDS.B[1].slice(0, 36) });
+    assert.match(restored.text, /되살렸습니다/);
+    const wrong = await call("restore_page", { id: IDS.book, photo_id: PAGE_IDS.B[0] });
+    assert.equal(wrong.isError, true);
+    assert.deepEqual(fakeApp.calls, [["restore", IDS.book, PAGE_IDS.B[1]]]);
+  });
+
+  test("처리가 끝날 때까지 기다린다", async () => {
+    fakeApp.statuses = [
+      { job: null, stalePages: 1 },
+      { job: { state: "queued" }, stalePages: 1 },
+      { job: { state: "running", done: 0, total: 1 }, stalePages: 1 },
+      { job: null, stalePages: 0 },
+    ];
+    const done = await call("processing_status", { id: IDS.pamphlet, wait_seconds: 5 });
+    assert.match(done.text, /처리 끝. 다시 처리할 원본 0장/);
+    fakeApp.statuses = [{ job: { state: "running", done: 1, total: 3 }, stalePages: 2 }];
+    const now = await call("processing_status", { id: IDS.pamphlet });
+    assert.match(now.text, /처리 중\(1\/3\)/);
+    fakeApp.statuses = [{ job: { state: "failed", message: "원본을 읽지 못했다" }, stalePages: 1 }];
+    assert.match((await call("processing_status", { id: IDS.pamphlet, wait_seconds: 1 })).text, /처리 실패: 원본을 읽지 못했다/);
+    fakeApp.statuses = [];
+  });
+
+  test("값이 틀리면 앱에 보내지 않는다", async () => {
+    fakeApp.calls.length = 0;
+    const bad = [
+      ["set_page_folds", { id: IDS.pamphlet, page: 1, folds: [0.2, 0.4, 0.6] }],
+      ["set_panel_order", { id: IDS.pamphlet, page: 1, order: [0, 1] }],
+      ["set_page_layout", { id: IDS.pamphlet, page: 1, layout: "quad" }],
+      ["set_page_quad", { id: IDS.pamphlet, page: 1, quad: { topLeft: { x: 2, y: 0 } } }],
+      ["move_page", { id: IDS.pamphlet, page: 1, before_page: 99 }],
+      ["remove_page", { id: IDS.memo, page: 1 }],
+    ];
+    for (const [name, args] of bad) {
+      const r = await client.callTool({ name, arguments: args });
+      assert.equal(r.isError, true, name);
+    }
+    assert.deepEqual(fakeApp.calls, []);
   });
 });
 

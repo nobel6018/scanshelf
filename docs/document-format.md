@@ -10,7 +10,7 @@
 <문서 id>/
   manifest.json          iPhone만 쓴다(예외: Mac의 Finder 가져오기가 촬영 기기 역할로 처음 한 번 쓴다, docs/import.md)
   raw/<페이지 id>.heic   iPhone 원본. 지우지 않는다
-  edits.json             Mac만 쓴다. 이름, 종류, 묶음, 태그, 꼭짓점, 순서, 지운 페이지 (overrides.rs)
+  edits.json             Mac만 쓴다. 이름, 종류, 묶음, 태그, 꼭짓점, 배치, 돌리기, 접힌 선(folds), 면 순서(panelOrder), 순서, 지운 페이지, 확인함 (overrides.rs)
   processing.json        Mac만 쓴다. 출력 페이지 목록과 처리 옵션 (processing.rs)
   pages/<출력 id>.jpg    처리된 페이지
   ocr/<출력 id>.json     OCR 결과 (ocr.rs)

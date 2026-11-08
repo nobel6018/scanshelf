@@ -19,7 +19,7 @@ sendCommand ────────────────────┼─> 
 | `src-tauri/src/lib.rs` `run`, `setup_deep_links` | 플러그인 등록, 파일 열기(`RunEvent::Opened`, 두 번째 실행 인자) |
 | `src/shortcuts.ts` `SHORTCUTS`, `matchShortcut`, `availableOn`, `shortcutsFor`, `registerCommand`, `sendCommand` | 앱 안 단축키 목록(화면별 범위 포함)과 명령 통로 |
 | `src/views/ShortcutBadges.tsx`, `src/App.tsx`(⌘ 길게 누르기 `useEffect`) | ⌘를 누르는 동안 단추 위 단축키 배지 |
-| `src/views/ShortcutOverlay.tsx` | ? 키, 도움말 메뉴로 여는 전체 목록 |
+| `src/views/ShortcutOverlay.tsx` | ⌘/, 도움말 메뉴로 여는 전체 목록 |
 | `src-tauri/src/actions.rs` `add_import_menu`(`SHORTCUTS_MENU_ID`) | 도움말 메뉴의 "단축키 보기" |
 | `src/App.tsx` `handleAction`, `runCommand` | 요청을 화면 동작으로 바꿈 |
 | `src/views/QuickOpen.tsx` | 빠른 찾기 창 (목록, 미리 보기, 마크다운 복사) |
@@ -47,7 +47,7 @@ sendCommand ────────────────────┼─> 
 | ⌘I | `toggleText` | 문서 화면에서만. 읽은 글자 보기 켜고 끄기 | 아니요 |
 | ⇧⌘F | `findInPage` | 문서 화면에서만. "페이지에서 찾기" 칸으로 | 예 |
 | ← → ↑ ↓ | | 문서 화면에서만. 이전, 다음 쪽. `DocumentView`가 직접 받고 표에는 `passive`로만 둠 | 아니요 |
-| ? | `showShortcuts` | 단축키 목록. Esc나 바깥을 누르면 닫힘 | 아니요 |
+| ⌘/ | `showShortcuts` | 단축키 목록. Esc나 바깥을 누르면 닫힘. 도움말 메뉴에도 표시(2026-11-08 ?에서 옮김) | 예 |
 | ⌘ 길게(0.8초) | | 단추마다 단축키 배지. 떼면 닫힘 | |
 
 - 글자 입력칸에 커서가 있으면 ⌘⌫, 화살표 같은 키는 입력칸의 원래 동작을 따릅니다
@@ -65,7 +65,7 @@ sendCommand ────────────────────┼─> 
 - 지금 화면에서 쓸 수 없는 단축키(`screens`)는 배지를 띄우지 않습니다. 비활성 단추는 흐리게 띄웁니다
 - 배지가 붙는 곳: 사이드바(보관함, 검색, 설정, 빠른 찾기, 가져오기), 문서 화면의 "보관함으로", 도구 막대(꼭짓점 고치기, 돌리기, 앞으로, 뒤로, 페이지 빼기, 다시 처리, 페이지에서 찾기, 글자), 처리 옵션의 "전체 다시 처리", 내보내기의 PDF
 
-전체 목록은 보조입니다. ? 키나 도움말 메뉴의 "단축키 보기"로 열면 지금 화면에서 쓰는 단축키를 묶음(이동, 파일, 문서, 도움말)별로 띄우고, Esc나 바깥을 누를 때까지 남습니다(`ShortcutOverlay`, `shortcutsFor(screen)`).
+전체 목록은 보조입니다. ⌘/나 도움말 메뉴의 "단축키 보기"로 열면 지금 화면에서 쓰는 단축키를 묶음(이동, 파일, 문서, 도움말)별로 띄우고, Esc나 바깥을 누를 때까지 남습니다(`ShortcutOverlay`, `shortcutsFor(screen)`).
 
 ### 문서 도구 막대에 새로 붙인 키 (2026-11-08)
 
@@ -80,6 +80,7 @@ sendCommand ────────────────────┼─> 
 | ⇧⌘⌫ | 이 쪽 빼기. ⌘⌫(문서 휴지통)와 짝을 이루되 Shift로 구분. 확인 창을 거치고 되살릴 수 있음 |
 | ⌘I | 읽은 글자 보기(inspect text). 입력칸 밖이라 기울임(⌘I)과 겹치지 않음 |
 | ⇧⌘F | 페이지에서 찾기. ⌘F(검색 화면)의 좁은 범위 짝 |
+| ⌘/ | 단축키 목록. 다른 Mac 앱에서도 단축키 목록에 쓰는 키이고 Shift가 필요 없다. 전에는 ?(⇧/)였다(2026-11-08 사용자 요청) |
 
 새 단축키는 `SHORTCUTS`에 한 줄을 넣고, 처리 함수를 `registerCommand`로 붙이고, 단추에 `data-shortcut`을 답니다. 세 곳 모두 같은 명령 이름을 씁니다.
 

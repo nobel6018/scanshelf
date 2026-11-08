@@ -144,8 +144,9 @@ pub fn add_import_menu(app: &tauri::App) -> tauri::Result<()> {
         Some(MenuItemKind::Submenu(file)) => file.insert(&item, 0)?,
         _ => menu.insert(&item, 1)?,
     }
-    // 도움말 메뉴(기본 메뉴의 마지막 하위 메뉴)에 "단축키 보기". 단축키는 ⌘를 길게 누르는 것과 ? 키라 메뉴에는 붙이지 않는다
-    let shortcuts = MenuItem::with_id(app, SHORTCUTS_MENU_ID, "단축키 보기", true, None::<&str>)?;
+    // 도움말 메뉴(기본 메뉴의 마지막 하위 메뉴)에 "단축키 보기". 메뉴에도 ⌘/를 표시한다.
+    // 메뉴 단축키가 키를 먼저 가져가므로 화면(shortcuts.ts)의 ⌘/와 같은 일(ShowShortcuts)을 한다
+    let shortcuts = MenuItem::with_id(app, SHORTCUTS_MENU_ID, "단축키 보기", true, Some("CmdOrCtrl+/"))?;
     match menu.items()?.into_iter().last() {
         Some(MenuItemKind::Submenu(help)) => help.append(&shortcuts)?,
         _ => menu.append(&shortcuts)?,

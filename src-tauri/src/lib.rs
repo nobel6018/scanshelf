@@ -174,18 +174,35 @@ pub fn run() {
 
 /// MCP 쓰기 통로(control.rs)를 127.0.0.1에 띄우고 접속 정보를 남긴다. 실패해도 앱은 그대로 쓴다(MCP 쓰기만 안 된다)
 fn start_control(app: &tauri::AppHandle, app_data_dir: &std::path::Path) {
-    struct Events(tauri::AppHandle);
-    impl control::ControlEvents for Events {
+    struct Host {
+        app: tauri::AppHandle,
+        cache: std::path::PathBuf,
+    }
+    impl control::ControlHost for Host {
         fn edits_changed(&self, document_id: uuid::Uuid, reprocess: bool) {
             if reprocess {
-                self.0.state::<pipeline::Pipeline>().enqueue(&document_id.to_string(), false);
+                self.app.state::<pipeline::Pipeline>().enqueue(&document_id.to_string(), false);
             }
-            let _ = self.0.emit(control::EVENT_EDITS_CHANGED, serde_json::json!({ "documentId": document_id }));
+            let _ = self.app.emit(control::EVENT_EDITS_CHANGED, serde_json::json!({ "documentId": document_id }));
         }
         fn tags_changed(&self, document_id: uuid::Uuid) {
             let payload = serde_json::json!({ "documentId": document_id });
-            let _ = self.0.emit(tagger::EVENT_TAGS_CHANGED, payload.clone());
-            let _ = self.0.emit(control::EVENT_EDITS_CHANGED, payload);
+            let _ = self.app.emit(tagger::EVENT_TAGS_CHANGED, payload.clone());
+            let _ = self.app.emit(control::EVENT_EDITS_CHANGED, payload);
+        }
+        fn job(&self, document_id: uuid::Uuid) -> Option<control::Job> {
+            let states = self.app.state::<pipeline::Pipeline>().states();
+            Some(match states.get(&document_id.to_string())? {
+                pipeline::JobState::Queued => control::Job::Queued,
+                pipeline::JobState::Running { done, total } => control::Job::Running { done: *done, total: *total },
+                pipeline::JobState::Failed { message } => control::Job::Failed { message: message.clone() },
+            })
+        }
+        fn raw_view(&self, dir: &std::path::Path, page: &scanshelf_core::Page) -> Result<image::RgbImage, String> {
+            pipeline::raw_view(dir, page)
+        }
+        fn flat_view(&self, dir: &std::path::Path, document_id: uuid::Uuid, page: &scanshelf_core::Page) -> Result<image::RgbImage, String> {
+            pipeline::flat_view(dir, &self.cache, &document_id.to_string(), page)
         }
     }
     let (Ok(library), Ok(cache)) = (library::library_dir(app), library::cache_dir(app)) else {
@@ -205,7 +222,8 @@ fn start_control(app: &tauri::AppHandle, app_data_dir: &std::path::Path) {
         eprintln!("MCP 쓰기 통로 정보를 쓰지 못했다: {error}");
         return;
     }
-    let service = std::sync::Arc::new(control::ControlService { library, cache, token, events: std::sync::Arc::new(Events(app.clone())) });
+    let host = Host { app: app.clone(), cache: cache.clone() };
+    let service = std::sync::Arc::new(control::ControlService { library, cache, token, events: std::sync::Arc::new(host) });
     tauri::async_runtime::spawn(async move {
         let result = match tokio::net::TcpListener::from_std(listener) {
             Ok(listener) => control::serve(listener, service).await,

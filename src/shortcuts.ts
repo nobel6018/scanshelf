@@ -71,7 +71,8 @@ export const SHORTCUTS: Shortcut[] = [
   { key: "f", mod: true, shift: true, run: "findInPage", label: "페이지에서 찾기", group: "문서", screens: ["document"], inInput: true },
   { key: "ArrowLeft", run: "prevPage", label: "이전 쪽", group: "문서", passive: true, screens: ["document"], display: "← ↑" },
   { key: "ArrowRight", run: "nextPage", label: "다음 쪽", group: "문서", passive: true, screens: ["document"], display: "→ ↓" },
-  { key: "?", run: "showShortcuts", label: "단축키 보기", group: "도움말", display: "?" },
+  // ?(⇧/)에서 ⌘/로 옮겼다. 다른 Mac 앱의 도움말 키와 같고 ⇧을 누르지 않아도 된다(2026-11-08 사용자 요청)
+  { key: "/", mod: true, run: "showShortcuts", label: "단축키 보기", group: "도움말", inInput: true },
   { key: "Meta", run: "showShortcuts", label: "단축키 보기 (누르는 동안)", group: "도움말", passive: true, display: IS_MAC ? "⌘ 길게" : "Ctrl 길게" },
 ];
 
@@ -108,8 +109,7 @@ export function matchShortcut(e: KeyboardEvent): Shortcut | undefined {
       !s.passive &&
       s.key === key &&
       !!s.mod === mod &&
-      // ?는 자판에 따라 Shift 없이도 나온다. 글자 자체로 맞춘다
-      (s.key === "?" || !!s.shift === e.shiftKey) &&
+      !!s.shift === e.shiftKey &&
       (!editable || s.inInput),
   );
 }

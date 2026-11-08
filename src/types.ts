@@ -61,6 +61,10 @@ export interface Edits {
   filters?: Record<string, Filter>;
   /** 사람이 보고 "확인함"을 누른 페이지. 확인 표시를 더 띄우지 않는다 */
   reviewed?: string[];
+  /** AI(MCP)나 사람이 고른 접힌 선 위치(0~1). 화면은 고치지 않고 그대로 저장해 돌려준다 */
+  folds?: Record<string, number[]>;
+  /** 3단 접지 면 순서(왼쪽 면이 0) */
+  panelOrder?: Record<string, number[]>;
   pageOrder?: string[];
   /** `/` 계층 태그. 고칠 때는 api.setDocumentTags를 쓴다(tagsByUser를 함께 켠다) */
   tags?: string[];

@@ -70,6 +70,8 @@ pub struct CorrectInput<'a> {
     pub extra_rotation: u16,
     /// 문서 대부분이 펼친 사진이라 "한 쪽"으로 찍힌 장도 접은 자국이 뚜렷하면 나눈다
     pub auto_spread: bool,
+    /// 사람이나 AI가 고른 접힌 선과 면 순서(edits.json). 비어 있으면 자동
+    pub hints: &'a scanshelf_core::overrides::PageHints,
 }
 
 /// 글자로 방향을 정하지 못한 펼침, 접지는 가로로 긴 쪽이 맞으므로 세로로 서 있으면 눕힌다
@@ -121,7 +123,11 @@ pub fn correct_page(input: CorrectInput<'_>) -> Result<Corrected, String> {
     if layout == PageLayout::Spread && input.quad.is_some() && (flat.width() as f32) < flat.height() as f32 * SPREAD_MIN_ASPECT {
         checks.push(PageCheck::QuadOnePage);
     }
-    let (parts, split_check) = split_step_checked(flat, layout);
+    let (parts, split_check) = match manual_split(&flat, layout, &input.hints.folds) {
+        Some(parts) => (parts, None),
+        None => split_step_checked(flat, layout),
+    };
+    let parts = order_panels(parts, &input.hints.panel_order);
     checks.extend(split_check);
     for (part, image) in parts {
         let image = dewarp_step(image, input.options.dewarp, framing, models)?;
@@ -140,6 +146,38 @@ pub fn correct_page(input: CorrectInput<'_>) -> Result<Corrected, String> {
         outputs.push((part, image));
     }
     Ok(Corrected { parts: outputs, checks })
+}
+
+/// 손으로 고른 접힌 선으로 나눈다. 배치와 선 수가 맞지 않으면 None(자동으로 찾는다)
+fn manual_split(image: &RgbImage, layout: PageLayout, folds: &[f32]) -> Option<Vec<(PagePart, RgbImage)>> {
+    let expected = match layout {
+        PageLayout::Single => return None,
+        PageLayout::Spread => 1,
+        PageLayout::Trifold => 2,
+    };
+    if folds.len() != expected {
+        return None;
+    }
+    let snapped = scanshelf_vision::snap_folds(image, folds);
+    let parts = scanshelf_vision::cut_at(image, &snapped);
+    Some(match layout {
+        PageLayout::Spread => vec![PagePart::Left, PagePart::Right].into_iter().zip(parts).collect(),
+        _ => (0u8..).map(PagePart::Panel).zip(parts).collect(),
+    })
+}
+
+/// 3단 접지 면을 정한 순서로 다시 센다. order[i]번째(왼쪽부터) 면이 문서에서 i번째가 된다. 순열이 아니면 그대로
+pub fn order_panels(parts: Vec<(PagePart, RgbImage)>, order: &[u8]) -> Vec<(PagePart, RgbImage)> {
+    let n = parts.len();
+    let is_permutation = order.len() == n && (0..n as u8).all(|i| order.contains(&i));
+    if n < 2 || !is_permutation || !parts.iter().all(|(p, _)| matches!(p, PagePart::Panel(_))) {
+        return parts;
+    }
+    let mut slots: Vec<Option<RgbImage>> = parts.into_iter().map(|(_, image)| Some(image)).collect();
+    (0u8..)
+        .zip(order)
+        .map(|(i, &from)| (PagePart::Panel(i), slots[from as usize].take().expect("순열이라 한 번씩만 꺼낸다")))
+        .collect()
 }
 
 /// 나누기와 그 확인. 사람이 한 쪽으로 둔 장(QuadOnePage가 아닌 한 쪽 표지 등)은 나누지 못해도 확인 대상이 아니다
@@ -271,6 +309,7 @@ mod tests {
             detect_rotation: &|_| None,
             extra_rotation: 0,
             auto_spread: false,
+            hints: &Default::default(),
         })
         .unwrap()
         .parts
@@ -345,5 +384,41 @@ mod tests {
     fn 긴_변은_상한에_맞춰_줄인다() {
         assert_eq!(fit_within(8000, 6000, 4000), (4000, 3000));
         assert_eq!(fit_within(300, 200, 4000), (300, 200));
+    }
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::*;
+
+    fn panels() -> Vec<(PagePart, RgbImage)> {
+        (0u8..3).map(|i| (PagePart::Panel(i), RgbImage::from_pixel(10 + i as u32, 5, image::Rgb([0; 3])))).collect()
+    }
+
+    #[test]
+    fn 면_순서를_바꾸면_번호를_다시_센다() {
+        let ordered = order_panels(panels(), &[2, 0, 1]);
+        let widths: Vec<(PagePart, u32)> = ordered.iter().map(|(p, i)| (*p, i.width())).collect();
+        assert_eq!(widths, vec![(PagePart::Panel(0), 12), (PagePart::Panel(1), 10), (PagePart::Panel(2), 11)]);
+    }
+
+    #[test]
+    fn 순열이_아니거나_접지가_아니면_그대로() {
+        let same = order_panels(panels(), &[0, 0, 1]);
+        assert_eq!(same.iter().map(|(_, i)| i.width()).collect::<Vec<_>>(), vec![10, 11, 12]);
+        let spread = vec![(PagePart::Left, RgbImage::new(4, 4)), (PagePart::Right, RgbImage::new(5, 4))];
+        let kept = order_panels(spread, &[1, 0]);
+        assert_eq!(kept[0].0, PagePart::Left);
+    }
+
+    #[test]
+    fn 손으로_고른_선은_배치와_수가_맞을_때만_쓴다() {
+        let image = RgbImage::from_pixel(900, 300, image::Rgb([235; 3]));
+        let parts = manual_split(&image, PageLayout::Trifold, &[0.3, 0.6]).expect("두 선이면 나눈다");
+        assert_eq!(parts.iter().map(|(_, i)| i.width()).collect::<Vec<_>>(), vec![270, 270, 360]);
+        let spread = manual_split(&image, PageLayout::Spread, &[0.4]).expect("한 선이면 나눈다");
+        assert_eq!(spread.iter().map(|(p, _)| *p).collect::<Vec<_>>(), vec![PagePart::Left, PagePart::Right]);
+        assert!(manual_split(&image, PageLayout::Trifold, &[0.5]).is_none());
+        assert!(manual_split(&image, PageLayout::Single, &[0.5]).is_none());
     }
 }

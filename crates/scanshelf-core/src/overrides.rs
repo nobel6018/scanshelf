@@ -45,12 +45,33 @@ pub struct Edits {
     /// 사람이 보고 "확인함"을 누른 페이지. Mac 처리 확인(꼭짓점, 나누기, 방향)을 더 묻지 않는다
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviewed: Vec<Uuid>,
+    /// 사람이나 AI가 고른 접힌 선 위치(0~1, 왼쪽부터). 원근 보정과 회전 뒤 그림 폭 기준이다.
+    /// 펼침은 하나, 3단 접지는 둘. 배치와 수가 맞지 않으면 처리가 무시한다(자동으로 찾는다)
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub folds: BTreeMap<Uuid, Vec<f32>>,
+    /// 3단 접지의 면 순서. 문서에 놓일 순서대로 왼쪽부터 센 면 번호(0~2). 예: [2, 0, 1]은 오른쪽 면(표지)이 먼저
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub panel_order: BTreeMap<Uuid, Vec<u8>>,
     /// 페이지 순서를 바꿨으면 전체 순서. 여기 없는 새 페이지는 촬영 순서대로 뒤에 붙는다
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_order: Option<Vec<Uuid>>,
 }
 
+/// 처리에 넘기는 페이지별 손 지정. 비어 있으면 자동
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PageHints {
+    pub folds: Vec<f32>,
+    pub panel_order: Vec<u8>,
+}
+
 impl Edits {
+    pub fn hints(&self, page: Uuid) -> PageHints {
+        PageHints {
+            folds: self.folds.get(&page).cloned().unwrap_or_default(),
+            panel_order: self.panel_order.get(&page).cloned().unwrap_or_default(),
+        }
+    }
+
     /// 없으면 빈 수정(고친 것 없음)
     pub fn load(document_dir: &Path) -> Result<Edits, ManifestError> {
         Ok(fsio::read_json_optional(&document_dir.join(EDITS_FILE))?.unwrap_or_default())

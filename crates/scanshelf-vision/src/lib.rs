@@ -19,7 +19,7 @@ pub mod util;
 pub use dewarp::{DewarpResult, Framing, dewarp};
 pub use filter::apply_filter;
 pub use fingers::{detect_fingers, remove_fingers};
-pub use fold::{Fold, Folds, Trifold, find_folds, split_trifold};
+pub use fold::{Fold, Folds, Trifold, cut_at, find_folds, snap_folds, split_trifold};
 pub use handwriting::{detect_colored_ink, remove_handwriting};
 pub use inpaint::{InpaintEngine, inpaint};
 pub use models::{Backend, MODELS, ModelId, ModelSpec, Models};
