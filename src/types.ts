@@ -205,7 +205,8 @@ export type AppAction =
   | { type: "open"; id: string; page: number | null }
   | { type: "search"; query: string }
   | { type: "import"; paths: string[] }
-  | { type: "pickImport" };
+  | { type: "pickImport" }
+  | { type: "showShortcuts" };
 
 export interface QuickOpenEntry {
   id: string;

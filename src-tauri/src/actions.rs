@@ -20,6 +20,7 @@ pub const EVENT_DOCUMENT_DELETED: &str = "document-deleted";
 /// macOS ⌥⇧⌘L. 세 수식키를 같이 누르는 조합이라 다른 앱과 잘 겹치지 않는다
 pub const SHOW_WINDOW_SHORTCUT: &str = "CommandOrControl+Alt+Shift+L";
 const IMPORT_MENU_ID: &str = "scanshelf-import";
+const SHORTCUTS_MENU_ID: &str = "scanshelf-shortcuts";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -33,6 +34,8 @@ pub enum Action {
     Import { paths: Vec<PathBuf> },
     /// 메뉴의 "가져오기…". 화면이 파일 고르기 창을 띄운다
     PickImport,
+    /// 도움말 메뉴의 "단축키 보기". 화면이 단축키 목록을 띄운다
+    ShowShortcuts,
 }
 
 #[derive(Default)]
@@ -141,9 +144,17 @@ pub fn add_import_menu(app: &tauri::App) -> tauri::Result<()> {
         Some(MenuItemKind::Submenu(file)) => file.insert(&item, 0)?,
         _ => menu.insert(&item, 1)?,
     }
+    // 도움말 메뉴(기본 메뉴의 마지막 하위 메뉴)에 "단축키 보기". 단축키는 ⌘를 길게 누르는 것과 ? 키라 메뉴에는 붙이지 않는다
+    let shortcuts = MenuItem::with_id(app, SHORTCUTS_MENU_ID, "단축키 보기", true, None::<&str>)?;
+    match menu.items()?.into_iter().last() {
+        Some(MenuItemKind::Submenu(help)) => help.append(&shortcuts)?,
+        _ => menu.append(&shortcuts)?,
+    }
     app.on_menu_event(|app, event| {
         if event.id() == IMPORT_MENU_ID {
             dispatch(app, Action::PickImport);
+        } else if event.id() == SHORTCUTS_MENU_ID {
+            dispatch(app, Action::ShowShortcuts);
         }
     });
     Ok(())

@@ -17,7 +17,9 @@ sendCommand ────────────────────┼─> 
 | `src-tauri/src/actions.rs` `parse_url`, `dispatch`, `frontend_ready`, `register_global_shortcut`, `add_import_menu` | 링크 해석, 화면이 준비되기 전 요청 보관, 전역 단축키, 파일 메뉴의 "가져오기…" |
 | `src-tauri/src/actions.rs` `quick_open_entries`, `document_markdown` | 빠른 찾기 목록(태그 포함), 마크다운 복사 |
 | `src-tauri/src/lib.rs` `run`, `setup_deep_links` | 플러그인 등록, 파일 열기(`RunEvent::Opened`, 두 번째 실행 인자) |
-| `src/shortcuts.ts` `SHORTCUTS`, `matchShortcut`, `registerCommand`, `sendCommand` | 앱 안 단축키 목록과 명령 통로 |
+| `src/shortcuts.ts` `SHORTCUTS`, `matchShortcut`, `availableOn`, `shortcutsFor`, `registerCommand`, `sendCommand` | 앱 안 단축키 목록(화면별 범위 포함)과 명령 통로 |
+| `src/views/ShortcutOverlay.tsx`, `src/App.tsx`(⌘ 길게 누르기 `useEffect`) | 단축키 목록 오버레이 |
+| `src-tauri/src/actions.rs` `add_import_menu`(`SHORTCUTS_MENU_ID`) | 도움말 메뉴의 "단축키 보기" |
 | `src/App.tsx` `handleAction`, `runCommand` | 요청을 화면 동작으로 바꿈 |
 | `src/views/QuickOpen.tsx` | 빠른 찾기 창 (목록, 미리 보기, 마크다운 복사) |
 
@@ -33,15 +35,24 @@ sendCommand ────────────────────┼─> 
 | ⌘, | `settings` | 설정 | 예 |
 | ⌘J | `openAsk` | 보관함에 물어보기 (질문 창이 붙임) | 예 |
 | ⌘O | `import` | 그림, PDF 가져오기 | 예 |
-| ⌘E | `exportPdf` | 열린 문서를 PDF로 내보내기. 다 되면 위에 "Finder에서 보기"를 띄움 | 아니요 |
-| ⌘R | `reprocess` | 열린 문서 다시 처리(강제) | 아니요 |
-| ⌘⌫ | `delete` | 열린 문서를 휴지통으로. 확인 창을 먼저 띄움 | 아니요 |
-| ← → ↑ ↓ | | 이전, 다음 쪽. 문서 화면(`DocumentView`)이 직접 받고 표에는 `passive`로만 둠 | 아니요 |
+| ⌘E | `exportPdf` | 문서 화면에서만. 이 문서를 PDF로 내보내기. 다 되면 위에 "Finder에서 보기"를 띄움 | 아니요 |
+| ⌘R | `reprocess` | 문서 화면에서만. 이 문서만 다시 처리(강제) | 아니요 |
+| ⌘⌫ | `delete` | 문서 화면에서만. 이 문서를 휴지통으로. 확인 창을 먼저 띄움 | 아니요 |
+| ← → ↑ ↓ | | 문서 화면에서만. 이전, 다음 쪽. `DocumentView`가 직접 받고 표에는 `passive`로만 둠 | 아니요 |
+| ? | `showShortcuts` | 단축키 목록. Esc나 바깥을 누르면 닫힘 | 아니요 |
+| ⌘ 길게(0.8초) | | 단축키 목록. 떼면 닫힘 | |
 
 - 글자 입력칸에 커서가 있으면 ⌘⌫, 화살표 같은 키는 입력칸의 원래 동작을 따릅니다
 - 한글 조합 중에 누른 키는 무시합니다(`isComposing`, keyCode 229)
 - 빠른 찾기 창이 열려 있으면 창이 키를 먼저 받고, 앱 단축키는 쉽니다
 - ⌘R은 웹뷰 새로고침 대신 다시 처리입니다. `preventDefault`로 새로고침을 막습니다
+- 문서 단위 명령(⌘E, ⌘R, ⌘⌫)은 `screens: ["document"]`입니다. 다른 화면에서 누르면 실행하지 않고 "⌘R은 문서 화면에서 씁니다: 이 문서만 다시 처리"를 알립니다. 보관함 화면에는 고른 문서가 없어 무엇을 다시 처리하는지 알 수 없기 때문입니다(2026-11-08 사용자 지적). 보관함 전체 다시 처리는 단축키로 두지 않습니다
+
+### 단축키 목록 오버레이
+
+iPadOS처럼 ⌘를 혼자 0.8초 누르고 있으면 지금 화면(보관함, 문서, 검색, 설정)에서 쓰는 단축키를 묶음(이동, 파일, 문서, 도움말)별로 띄웁니다. 떼면 닫힙니다. ⌘K처럼 다른 키와 같이 누르면 띄우지 않고, 떠 있다가 다른 키를 누르거나 창이 포커스를 잃어도 닫습니다. ? 키나 도움말 메뉴의 "단축키 보기"로 열면 Esc나 바깥을 누를 때까지 남습니다.
+
+목록은 `SHORTCUTS`를 그대로 읽습니다(`shortcutsFor(screen)`). 새 단축키를 `SHORTCUTS`에 넣으면 오버레이에도 바로 보이므로 따로 고칠 곳이 없습니다. 특정 화면 전용이면 `screens`를, 키 표기를 직접 정하려면 `display`를 줍니다.
 
 ### 다른 화면이 명령 붙이기
 

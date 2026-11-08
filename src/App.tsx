@@ -3,7 +3,18 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { api } from "./api";
 import { confirmAndDelete, isBusy, showDocumentMenu } from "./documentMenu";
-import { labelFor, matchShortcut, onCommand, runRegistered, type CommandName } from "./shortcuts";
+import {
+  availableOn,
+  isModifierOnly,
+  labelFor,
+  matchShortcut,
+  onCommand,
+  runRegistered,
+  SCREEN_LABEL,
+  shortcutLabel,
+  type CommandName,
+} from "./shortcuts";
+import { ShortcutOverlay } from "./views/ShortcutOverlay";
 import type { AppAction, DocumentSummary, Progress } from "./types";
 import { UpdateBanner } from "./update/UpdateBanner";
 import { useAppUpdate } from "./update/useAppUpdate";
@@ -28,6 +39,8 @@ interface Notice {
 
 export default function App() {
   const [route, setRoute] = useState<Route>({ view: "library" });
+  /** 단축키 오버레이. hold는 ⌘를 누르는 동안만, sticky는 ? 키나 메뉴로 연 것 */
+  const [overlay, setOverlay] = useState<"hold" | "sticky" | null>(null);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -188,6 +201,8 @@ export default function App() {
         case "delete":
           if (!openId) return;
           return confirmAndDelete({ id: openId, name: current?.name ?? "이 문서" }, { onDeleted, onError: setError });
+        case "showShortcuts":
+          return setOverlay("sticky");
         case "openAsk":
           // 질문 창(mac-organize)이 registerCommand("openAsk")로 붙인다
           if (!runRegistered(command)) setNotice({ text: "보관함에 물어보기는 아직 준비되지 않았습니다" });
@@ -212,6 +227,8 @@ export default function App() {
           return importPaths(a.paths);
         case "pickImport":
           return pickAndImport();
+        case "showShortcuts":
+          return setOverlay("sticky");
       }
     },
     [openDocument, importPaths, pickAndImport],
@@ -242,13 +259,20 @@ export default function App() {
   const commandRef = useRef(runCommand);
   commandRef.current = runCommand;
   const modalOpen = quickOpen !== null;
+  const screen = route.view;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // 빠른 찾기 같은 창이 이미 처리한 키
       if (e.defaultPrevented || modalOpen) return;
       const shortcut = matchShortcut(e);
       if (!shortcut) return;
+      // 다른 화면 전용 키도 웹뷰 기본 동작(⌘R 새로고침 등)은 막는다
       e.preventDefault();
+      if (!availableOn(shortcut, screen)) {
+        const where = (shortcut.screens ?? []).map((s) => SCREEN_LABEL[s]).join(", ");
+        setNotice({ text: `${shortcutLabel(shortcut)}은 ${where} 화면에서 씁니다: ${shortcut.label}` });
+        return;
+      }
       commandRef.current(shortcut.run);
     };
     window.addEventListener("keydown", onKey);
@@ -256,6 +280,48 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", onKey);
       off();
+    };
+  }, [modalOpen, screen]);
+
+  // ⌘를 혼자 0.8초 누르고 있으면 단축키 목록을 띄우고, 떼면 닫는다. 다른 키와 같이 누르면(⌘K 등) 띄우지 않는다
+  useEffect(() => {
+    let timer: number | undefined;
+    const cancel = () => {
+      window.clearTimeout(timer);
+      timer = undefined;
+    };
+    const onDown = (e: KeyboardEvent) => {
+      if (isModifierOnly(e)) {
+        if (!e.repeat && timer === undefined && !modalOpen) timer = window.setTimeout(() => setOverlay((o) => o ?? "hold"), 800);
+        return;
+      }
+      cancel();
+      setOverlay((o) => {
+        if (o === "hold") return null;
+        if (o === "sticky" && e.key === "Escape") {
+          e.preventDefault();
+          return null;
+        }
+        return o;
+      });
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (!isModifierOnly(e)) return;
+      cancel();
+      setOverlay((o) => (o === "hold" ? null : o));
+    };
+    const onBlur = () => {
+      cancel();
+      setOverlay(null);
+    };
+    window.addEventListener("keydown", onDown, true);
+    window.addEventListener("keyup", onUp, true);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      cancel();
+      window.removeEventListener("keydown", onDown, true);
+      window.removeEventListener("keyup", onUp, true);
+      window.removeEventListener("blur", onBlur);
     };
   }, [modalOpen]);
 
@@ -385,6 +451,7 @@ export default function App() {
           <div className="drop-card">놓으면 보관함으로 가져옵니다 (jpg, png, heic, PDF)</div>
         </div>
       )}
+      {overlay && <ShortcutOverlay screen={screen} sticky={overlay === "sticky"} onClose={() => setOverlay(null)} />}
       {/* ⌘J 모든 문서에 질문(docs/ask.md). 다른 곳에서는 openAsk()로 연다 */}
       <AskWindow documents={documents} onOpen={(id, outputId) => setRoute({ view: "document", id, outputId: outputId ?? undefined })} />
     </div>

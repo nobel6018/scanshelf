@@ -14,7 +14,18 @@ export type AppCommand =
   | "exportPdf"
   | "reprocess"
   | "delete"
-  | "openAsk";
+  | "openAsk"
+  | "showShortcuts";
+
+/** 단축키가 동작하는 화면. App.tsx의 Route.view와 같다 */
+export type Screen = "library" | "document" | "search" | "settings";
+
+export const SCREEN_LABEL: Record<Screen, string> = {
+  library: "보관함",
+  document: "문서",
+  search: "검색",
+  settings: "설정",
+};
 
 /** 다른 팀원 화면이 붙이는 명령도 받도록 문자열을 열어 둔다 */
 export type CommandName = AppCommand | (string & {});
@@ -27,7 +38,11 @@ export interface Shortcut {
   shift?: boolean;
   run: CommandName;
   label: string;
-  group: "파일" | "문서" | "이동";
+  group: "이동" | "파일" | "문서" | "도움말";
+  /** 이 화면에서만 동작하고 목록에 보인다. 없으면 모든 화면 */
+  screens?: Screen[];
+  /** 키 표기를 직접 정할 때(예: "⌘ 길게") */
+  display?: string;
   /** 글자 입력칸에 커서가 있어도 동작하는지. 입력칸 기본 동작(⌘⌫, 화살표)과 겹치면 false */
   inInput?: boolean;
   /** 목록에 보여 주기만 한다. 화면(DocumentView)이 키를 직접 받는다 */
@@ -41,12 +56,25 @@ export const SHORTCUTS: Shortcut[] = [
   { key: ",", mod: true, run: "settings", label: "설정", group: "이동", inInput: true },
   { key: "j", mod: true, run: "openAsk", label: "보관함에 물어보기", group: "이동", inInput: true },
   { key: "o", mod: true, run: "import", label: "그림, PDF 가져오기", group: "파일", inInput: true },
-  { key: "e", mod: true, run: "exportPdf", label: "열린 문서를 PDF로 내보내기", group: "문서" },
-  { key: "r", mod: true, run: "reprocess", label: "열린 문서 다시 처리", group: "문서" },
-  { key: "Backspace", mod: true, run: "delete", label: "열린 문서 휴지통으로 (확인 후)", group: "문서" },
-  { key: "ArrowLeft", run: "prevPage", label: "이전 쪽", group: "문서", passive: true },
-  { key: "ArrowRight", run: "nextPage", label: "다음 쪽", group: "문서", passive: true },
+  // 문서 단위 명령은 문서 화면에서만 동작한다. 보관함 화면에서 ⌘R이 무엇을 다시 처리하는지 알 수 없어서다
+  { key: "e", mod: true, run: "exportPdf", label: "이 문서를 PDF로 내보내기", group: "문서", screens: ["document"] },
+  { key: "r", mod: true, run: "reprocess", label: "이 문서만 다시 처리", group: "문서", screens: ["document"] },
+  { key: "Backspace", mod: true, run: "delete", label: "이 문서 휴지통으로 (확인 후)", group: "문서", screens: ["document"] },
+  { key: "ArrowLeft", run: "prevPage", label: "이전 쪽", group: "문서", passive: true, screens: ["document"], display: "← ↑" },
+  { key: "ArrowRight", run: "nextPage", label: "다음 쪽", group: "문서", passive: true, screens: ["document"], display: "→ ↓" },
+  { key: "?", run: "showShortcuts", label: "단축키 보기", group: "도움말", display: "?" },
+  { key: "Meta", run: "showShortcuts", label: "단축키 보기 (누르는 동안)", group: "도움말", passive: true, display: IS_MAC ? "⌘ 길게" : "Ctrl 길게" },
 ];
+
+const GROUP_ORDER: Shortcut["group"][] = ["이동", "파일", "문서", "도움말"];
+
+/** 화면에서 쓸 수 있는 단축키를 묶음 순서대로. 오버레이가 이 목록을 그대로 보여 준다 */
+export function shortcutsFor(screen: Screen): { group: Shortcut["group"]; items: Shortcut[] }[] {
+  const visible = SHORTCUTS.filter((s) => !s.screens || s.screens.includes(screen));
+  return GROUP_ORDER.map((group) => ({ group, items: visible.filter((s) => s.group === group) })).filter(
+    (g) => g.items.length > 0,
+  );
+}
 
 export function isEditable(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -56,6 +84,7 @@ export function isEditable(target: EventTarget | null): boolean {
   return false;
 }
 
+/** 화면을 가리지 않고 키에 맞는 단축키. 다른 화면 전용 키를 눌렀는지 알려 줄 때 쓴다 */
 export function matchShortcut(e: KeyboardEvent): Shortcut | undefined {
   // 한글 조합 중 Enter, Space는 글자를 완성하는 키다. WebKit은 isComposing 없이 keyCode 229로 보내기도 한다
   if (e.isComposing || e.keyCode === 229) return undefined;
@@ -66,8 +95,23 @@ export function matchShortcut(e: KeyboardEvent): Shortcut | undefined {
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   const editable = isEditable(e.target);
   return SHORTCUTS.find(
-    (s) => !s.passive && s.key === key && !!s.mod === mod && !!s.shift === e.shiftKey && (!editable || s.inInput),
+    (s) =>
+      !s.passive &&
+      s.key === key &&
+      !!s.mod === mod &&
+      // ?는 자판에 따라 Shift 없이도 나온다. 글자 자체로 맞춘다
+      (s.key === "?" || !!s.shift === e.shiftKey) &&
+      (!editable || s.inInput),
   );
+}
+
+export function availableOn(s: Shortcut, screen: Screen): boolean {
+  return !s.screens || s.screens.includes(screen);
+}
+
+/** ⌘ 하나만 눌렀는지(오버레이를 띄우는 키) */
+export function isModifierOnly(e: KeyboardEvent): boolean {
+  return IS_MAC ? e.key === "Meta" : e.key === "Control";
 }
 
 const KEY_LABEL: Record<string, string> = {
@@ -81,6 +125,7 @@ const KEY_LABEL: Record<string, string> = {
 };
 
 export function shortcutLabel(s: Shortcut): string {
+  if (s.display) return s.display;
   const key = KEY_LABEL[s.key] ?? s.key.toUpperCase();
   if (IS_MAC) return `${s.shift ? "⇧" : ""}${s.mod ? "⌘" : ""}${key}`;
   return [s.mod && "Ctrl", s.shift && "Shift", key].filter(Boolean).join("+");
