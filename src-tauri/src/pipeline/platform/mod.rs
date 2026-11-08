@@ -38,6 +38,19 @@ pub fn decode_oriented(path: &Path, max_pixel_size: Option<u32>) -> Result<RgbIm
     }
 }
 
+/// Vision 사각형 감지 후보(문서 영역 감지가 놓쳤을 때)
+pub fn detect_rectangle_quads(image: &RgbImage) -> Vec<Quad> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::detect_rectangle_quads(image)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = image;
+        Vec::new()
+    }
+}
+
 /// 원본 해상도에서 문서 테두리를 다시 찾는다. 못 찾으면 없음(사진 전체를 쓴다)
 pub fn detect_document_quad(image: &RgbImage) -> Option<Quad> {
     #[cfg(target_os = "macos")]

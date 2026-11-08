@@ -42,6 +42,9 @@ pub struct Edits {
     /// 페이지마다 고른 필터. 없으면 문서 설정(processing.json defaults)을 따른다
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub filters: BTreeMap<Uuid, crate::processing::Filter>,
+    /// 사람이 보고 "확인함"을 누른 페이지. Mac 처리 확인(꼭짓점, 나누기, 방향)을 더 묻지 않는다
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reviewed: Vec<Uuid>,
     /// 페이지 순서를 바꿨으면 전체 순서. 여기 없는 새 페이지는 촬영 순서대로 뒤에 붙는다
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_order: Option<Vec<Uuid>>,

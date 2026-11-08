@@ -6,6 +6,11 @@
 //! - `Dewarp::Strong`(vFlat "더 펴기"): 한 번 편 결과를 다시 모델에 넣어 남은 굽음을 잡고, 두 격자를 합성해 원본에서 한 번만 표본을 뜬다
 //! - `Dewarp::Off` 또는 모델 없음: 그대로
 //!
+//! 모델은 바탕 위에 놓인 페이지 사진을 보고 페이지 경계를 찾도록 학습됐다. 꼭짓점으로 이미 잘라 낸 페이지를
+//! 그대로 넣으면 글자 덩어리 가장자리를 경계로 보고 둘레를 4~25% 잘라 낸다(실측, docs/vision.md).
+//! 그래서 `Framing::Page`는 둘레에 어두운 바탕을 붙여 예측한다. `Framing::Photo`(꼭짓점 없이 사진 전체)는
+//! 그대로 넣어 모델이 페이지 경계도 찾게 둔다.
+//!
 //! 출력 크기는 격자 가로줄과 세로줄의 원본 위 길이로 정한다. 굽은 페이지를 펴면 원래 가로세로 비가 돌아온다.
 //!
 //! @see docs/vision.md
@@ -26,6 +31,15 @@ const GRID_H: usize = 45;
 /// 더 펴기 2차 예측 때 둘레에 붙이는 바탕(이미지 크기 대비)과 색. 책상 같은 어두운 바탕을 흉내 낸다
 const PAD_FRACTION: f32 = 0.06;
 const PAD_COLOR: [u8; 3] = [64, 60, 56];
+
+/// 곡면 보정에 넣는 이미지가 어떤 모양인지
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Framing {
+    /// 꼭짓점으로 잘라 낸 페이지. 화면을 페이지가 꽉 채운다
+    Page,
+    /// 바탕 위에 페이지가 놓인 사진(꼭짓점 없음)
+    Photo,
+}
 
 #[derive(Debug, Clone)]
 pub struct DewarpResult {
@@ -93,7 +107,7 @@ impl Grid {
     }
 }
 
-pub fn dewarp(img: &RgbImage, mode: Dewarp, models: &Models) -> Result<DewarpResult, VisionError> {
+pub fn dewarp(img: &RgbImage, mode: Dewarp, framing: Framing, models: &Models) -> Result<DewarpResult, VisionError> {
     let passthrough = || DewarpResult { image: img.clone(), applied: false, passes: 0 };
     if mode == Dewarp::Off || img.width() < 32 || img.height() < 32 {
         return Ok(passthrough());
@@ -101,7 +115,10 @@ pub fn dewarp(img: &RgbImage, mode: Dewarp, models: &Models) -> Result<DewarpRes
     if !models.available(ModelId::UvDoc) {
         return Ok(passthrough());
     }
-    let mut grid = predict(img, models)?;
+    let mut grid = match framing {
+        Framing::Page => predict_padded(img, models)?,
+        Framing::Photo => predict(img, models)?,
+    };
     let mut passes = 1;
     if mode == Dewarp::Strong {
         // 중간 결과는 모델 입력의 두 배 해상도면 충분하다. 최종 표본은 원본에서 뜬다
@@ -257,7 +274,7 @@ mod tests {
     #[test]
     fn 모델이_없으면_그대로_둔다() {
         let img = RgbImage::new(100, 100);
-        let r = dewarp(&img, Dewarp::Strong, &Models::none()).unwrap();
+        let r = dewarp(&img, Dewarp::Strong, Framing::Page, &Models::none()).unwrap();
         assert!(!r.applied);
         assert_eq!(r.image, img);
     }

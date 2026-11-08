@@ -118,7 +118,7 @@ pub fn process_page(
     models: &Models,
 ) -> Result<(RgbImage, PageReport), VisionError> {
     let mut report = PageReport::default();
-    let flat = timed(&mut report.timings, "dewarp", || dewarp(img, options.dewarp, models))?;
+    let flat = timed(&mut report.timings, "dewarp", || dewarp(img, options.dewarp, crate::Framing::Page, models))?;
     report.dewarp_applied = flat.applied;
     report.dewarp_passes = flat.passes;
     let mut page = flat.image;

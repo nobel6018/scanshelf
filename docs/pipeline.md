@@ -15,7 +15,7 @@
 ## 페이지 하나의 흐름
 
 1. 원본 읽기: `CGImageSourceCreateThumbnailAtIndex`에 크기 제한 없이 `CreateThumbnailWithTransform`을 줘서 EXIF 회전을 적용합니다. image 크레이트는 HEIC를 못 읽습니다
-2. 꼭짓점: `Edits::apply(manifest)` 값(손으로 고친 값, 없으면 iPhone 감지값). 둘 다 없거나 믿을 만한 사각형이 아니면 원본 해상도에서 `VNDetectDocumentSegmentationRequest`로 다시 찾고, 그것도 못 찾거나 믿을 만하지 않으면 사진 전체를 씁니다. Mac이 찾은 꼭짓점은 캐시 상태 파일에 두고 화면에 "Mac 감지"로 보입니다(`src-tauri/src/pipeline/mod.rs` `choose_quad`)
+2. 꼭짓점: `Edits::apply(manifest)` 값(손으로 고친 값, 없으면 iPhone 감지값). 둘 다 없거나 믿을 만한 사각형이 아니면 Mac이 다시 찾습니다(`find_page_quad`). 원본 해상도 문서 영역 감지(`VNDetectDocumentSegmentationRequest`), 2000px로 줄인 문서 영역 감지, 사각형 감지(`VNDetectRectanglesRequest`, 두 크기 후보를 모음) 차례입니다. 문서 영역 감지는 같은 사진도 크기에 따라 맞고 틀리기를 오가서 두 크기를 봅니다. 사각형 감지는 펼침의 한 쪽씩도 잡으므로 나란히 붙은 두 쪽을 합친 펼침 전체도 후보에 넣고 가장 넓은 것을 고릅니다(`pick_rectangle`). 펼침 배치인데 세로로 긴 테두리(왼쪽이 검은 표지일 때 흰 오른쪽만 잡히는 경우)는 버립니다. 셋 다 못 찾으면 사진 전체를 씁니다. Mac이 찾은 꼭짓점은 캐시 상태 파일에 두고 화면에 "Mac 감지"로 보입니다(`src-tauri/src/pipeline/mod.rs` `choose_quad`)
    - 믿을 만한 사각형: 볼록하고, 마주 보는 변 길이의 비가 0.8 이상이고, 내각이 65~115도(`scanshelf_core::Quad::is_plausible`, 기준과 근거는 docs/capture.md "테두리를 믿을 수 있는가"). 2026-11-08 촬영에서 iPhone이 흰 면이나 어두운 표지 쪽 꼭짓점을 접힌 선에 붙인 삼각형을 넘겼고, 그대로 펴서 페이지가 찢긴 그림이 됐습니다(6장)
    - 이렇게 버린 iPhone 꼭짓점으로 이미 처리한 장은 지문에 `quadRejected`가 붙어 한 번 다시 처리됩니다. 원본을 열지 않으려고 이 판단만 iPhone 사진 비율(세로 4:3)로 합니다(`fingerprint`)
 3. 보정 단계(`steps.rs`): 원근 보정 → 두 페이지 분리 → 곡면 보정 → 손가락 지우기 → 필기 지우기 → 조명과 필터
@@ -67,7 +67,7 @@
 
 ## 페이지 확인
 
-처리하며 확인한 것을 페이지마다 캐시 상태에 남기고(`steps.rs` `PageCheck`, `PageState.checks`), 문서 화면 아래 줄과 썸네일의 `!`, 보관함 카드의 "확인 N쪽"으로 보여 줍니다. 보관함 머리줄의 "확인 필요 N개"를 누르면 그런 문서만 보이고, 문서 화면 아래 줄의 "다음 확인 쪽"이 볼 쪽으로 차례로 옮겨 갑니다(`LibraryView.tsx`, `DocumentView.tsx` `goNextReview`). 자동으로 고친 것은 기록만, 사람이 볼 것은 경고로 띄웁니다.
+처리하며 확인한 것을 페이지마다 캐시 상태에 남기고(`steps.rs` `PageCheck`, `PageState.checks`), 문서 화면 아래 줄과 썸네일의 `!`, 보관함 카드의 "확인 N쪽"으로 보여 줍니다. 보관함 머리줄의 "확인 필요 N개"를 누르면 그런 문서만 보이고, 문서 화면 아래 줄의 "다음 확인 쪽"이 볼 쪽으로 차례로 옮겨 갑니다(`LibraryView.tsx`, `DocumentView.tsx` `goNextReview`). 자동으로 고친 것은 기록만, 사람이 볼 것은 경고로 띄웁니다. 문장마다 무엇을 보고 어떻게 고치는지 적습니다(`CHECK_TEXT`). 보고 나서 고칠 게 없으면 아래 줄의 "확인함"을 누릅니다. `edits.json` `reviewed`에 남아 `!`와 "확인 필요" 수에서 빠집니다(`library.rs` `summarize`).
 
 | 확인 | 뜻 | 사람이 볼 것 |
 |---|---|---|
@@ -75,7 +75,7 @@
 | `quadMissing` | 믿을 만한 꼭짓점이 없어 사진 전체를 씀 | 예 |
 | `quadOnePage` | 펼침인데 편 결과가 세로로 김. 한 쪽만 잡혔을 수 있음 | 예 |
 | `notSplit` | 펼침인데 접힌 선을 못 찾아 한 장으로 남김 | 예 |
-| `splitAtSeam` | 그림자 없는 펼침을 가운데 이음매에서 나눔 | 예 |
+| `splitAtSeam` | 그림자 없는 펼침을 가운데 이음매에서 나눔. 실제 보관함 4개 문서에서 모두 맞게 나뉘어 기록만 함 | 아니오 |
 | `rotationDoubtful` | 돌리라고 나왔지만 돌려 보니 덜 읽혀 그대로 둠 | 예 |
 | `photoPage` | 사진 페이지라 선명하게 대신 밝기만 맞춤 | 아니오 |
 

@@ -133,7 +133,7 @@ fn scan_library(dir: &Path, cache: &Path, pipeline: &Pipeline) -> Vec<DocumentSu
 }
 
 pub fn summarize(dir: &Path, cache: &Path, pipeline: &Pipeline) -> Result<DocumentSummary, String> {
-    let (manifest, _) = load_applied(dir)?;
+    let (manifest, edits) = load_applied(dir)?;
     let processing = load_processing(dir);
     let id = manifest.id.to_string();
     let state = match pipeline.job_state(&id) {
@@ -159,7 +159,9 @@ pub fn summarize(dir: &Path, cache: &Path, pipeline: &Pipeline) -> Result<Docume
         .map(|p| p.to_string_lossy().into_owned());
     let review_pages = pipeline::page_checks(cache, &id)
         .into_iter()
-        .filter(|(page, checks)| manifest.pages.iter().any(|p| p.id == *page) && checks.iter().any(|c| c.needs_review()))
+        .filter(|(page, checks)| {
+            manifest.pages.iter().any(|p| p.id == *page) && !edits.reviewed.contains(page) && checks.iter().any(|c| c.needs_review())
+        })
         .count();
     Ok(DocumentSummary {
         id,

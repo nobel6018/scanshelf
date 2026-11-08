@@ -59,6 +59,8 @@ export interface Edits {
   deletedPages?: string[];
   /** 페이지마다 고른 필터. 없으면 문서 처리 옵션을 따른다 */
   filters?: Record<string, Filter>;
+  /** 사람이 보고 "확인함"을 누른 페이지. 확인 표시를 더 띄우지 않는다 */
+  reviewed?: string[];
   pageOrder?: string[];
   /** `/` 계층 태그. 고칠 때는 api.setDocumentTags를 쓴다(tagsByUser를 함께 켠다) */
   tags?: string[];

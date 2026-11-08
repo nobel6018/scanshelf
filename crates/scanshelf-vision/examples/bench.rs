@@ -67,7 +67,7 @@ fn main() {
             med(&mut total)
         );
         let t = Instant::now();
-        let _ = dewarp(&img, scanshelf_core::processing::Dewarp::Strong, &models).unwrap();
+        let _ = dewarp(&img, scanshelf_core::processing::Dewarp::Strong, scanshelf_vision::Framing::Page, &models).unwrap();
         println!("  더 펴기 전체 {:.0} ms", ms(t));
     }
     for f in [Filter::Grayscale, Filter::BlackWhite] {

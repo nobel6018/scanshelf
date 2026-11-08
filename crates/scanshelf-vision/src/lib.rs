@@ -16,7 +16,7 @@ pub mod pipeline;
 pub mod split;
 pub mod util;
 
-pub use dewarp::{DewarpResult, dewarp};
+pub use dewarp::{DewarpResult, Framing, dewarp};
 pub use filter::apply_filter;
 pub use fingers::{detect_fingers, remove_fingers};
 pub use fold::{Fold, Folds, Trifold, find_folds, split_trifold};

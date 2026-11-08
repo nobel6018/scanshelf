@@ -107,7 +107,8 @@ h3 { font-size: 14px; margin: 0 0 10px; }
 .find-input { width: 180px; }
 .viewer-stage { flex: 1; min-height: 0; display: flex; gap: 12px; padding: 16px; overflow: auto; background: #e9e6da; }
 .page-frame { position: relative; margin: 0 auto; align-self: flex-start; max-width: 100%; }
-.page-frame img { display: block; max-width: 100%; max-height: calc(100vh - 210px); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18); }
+.page-frame img { display: block; max-width: 100%; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18); cursor: zoom-in; }
+.page-frame.zoomed img { cursor: zoom-out; }
 .hit-box { position: absolute; background: rgba(255, 214, 0, 0.35); outline: 2px solid rgba(214, 160, 0, 0.8); border-radius: 2px; }
 .ocr-text { width: 340px; flex: none; background: var(--paper); border-radius: 8px; padding: 12px 16px; overflow: auto; user-select: text; }
 .ocr-text p { margin: 0 0 10px; white-space: pre-wrap; line-height: 1.55; }

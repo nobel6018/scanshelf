@@ -35,7 +35,7 @@ pub enum PageCheck {
     QuadOnePage,
     /// 펼침인데 접힌 선을 찾지 못해 한 장으로 남겼다
     NotSplit,
-    /// 그림자 없는 펼침을 가운데 이음매에서 나눴다
+    /// 그림자 없는 펼침을 가운데 이음매에서 나눴다. 실제 보관함에서 모두 맞게 나뉘어 기록만 한다
     SplitAtSeam,
     /// 글자 방향이 돌려야 한다고 했지만 돌려 보니 덜 읽혀 그대로 뒀다
     RotationDoubtful,
@@ -46,7 +46,7 @@ pub enum PageCheck {
 impl PageCheck {
     /// 사람이 봐야 하는지. 아니면 자동으로 처리한 기록이다
     pub fn needs_review(self) -> bool {
-        matches!(self, Self::QuadMissing | Self::QuadOnePage | Self::NotSplit | Self::SplitAtSeam | Self::RotationDoubtful)
+        matches!(self, Self::QuadMissing | Self::QuadOnePage | Self::NotSplit | Self::RotationDoubtful)
     }
 }
 
@@ -107,6 +107,11 @@ fn effective_layout(image: &RgbImage, layout: PageLayout, auto_spread: bool) -> 
 pub fn correct_page(input: CorrectInput<'_>) -> Result<Corrected, String> {
     let models = input.models;
     let mut checks = Vec::new();
+    let framing = if input.quad.is_some_and(|q| !is_full_frame(&q)) {
+        scanshelf_vision::Framing::Page
+    } else {
+        scanshelf_vision::Framing::Photo
+    };
     let flat = perspective_step(input.image, input.quad)?;
     // 접힌 선은 세로로 찾으므로 나누기 전에 세워야 한다. 누운 채로는 펼친 두 쪽을 나누지 못한다
     let flat = rotate_step(flat, input.layout, input.detect_rotation, input.extra_rotation);
@@ -119,7 +124,7 @@ pub fn correct_page(input: CorrectInput<'_>) -> Result<Corrected, String> {
     let (parts, split_check) = split_step_checked(flat, layout);
     checks.extend(split_check);
     for (part, image) in parts {
-        let image = dewarp_step(image, input.options.dewarp, models)?;
+        let image = dewarp_step(image, input.options.dewarp, framing, models)?;
         let image = if input.options.remove_handwriting {
             remove_handwriting_step(image, models)?
         } else {
@@ -183,12 +188,12 @@ pub fn split_step(image: RgbImage, layout: PageLayout) -> Vec<(PagePart, RgbImag
     }
 }
 
-/// 4단계: 곡면 보정. 모델이 없으면 그대로
-pub fn dewarp_step(image: RgbImage, mode: Dewarp, models: &Models) -> Result<RgbImage, String> {
+/// 4단계: 곡면 보정. 모델이 없으면 그대로. 꼭짓점으로 잘라 낸 페이지는 바탕을 둘러 넣어야 둘레가 잘리지 않는다(Framing)
+pub fn dewarp_step(image: RgbImage, mode: Dewarp, framing: scanshelf_vision::Framing, models: &Models) -> Result<RgbImage, String> {
     if mode == Dewarp::Off {
         return Ok(image);
     }
-    scanshelf_vision::dewarp(&image, mode, models).map(|r| r.image).map_err(|e| e.to_string())
+    scanshelf_vision::dewarp(&image, mode, framing, models).map(|r| r.image).map_err(|e| e.to_string())
 }
 
 /// 2단계: 손가락 지우기

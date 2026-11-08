@@ -186,14 +186,33 @@ fn 모델로_곡면을_편다() {
     };
     let page = render_page(900, 1250, 21);
     let warped = curl(&page, 1.0, 0.3);
-    let normal = dewarp(&warped, Dewarp::Normal, &models).unwrap();
+    let normal = dewarp(&warped, Dewarp::Normal, Framing::Photo, &models).unwrap();
     assert!(normal.applied);
-    let strong = dewarp(&warped, Dewarp::Strong, &models).unwrap();
+    let strong = dewarp(&warped, Dewarp::Strong, Framing::Photo, &models).unwrap();
     let (s0, s1, s2) = (ssim(&warped, &page), ssim(&normal.image, &page), ssim(&strong.image, &page));
     let (l0, l1, l2) = (line_sharpness(&warped), line_sharpness(&normal.image), line_sharpness(&strong.image));
     eprintln!("SSIM 휜 {s0:.3} 보정 {s1:.3} 더펴기 {s2:.3} / 글줄 {l0:.3} {l1:.3} {l2:.3}");
     assert!(s1 > s0, "SSIM {s0} -> {s1}");
     assert!(l1 > l0, "글줄 {l0} -> {l1}");
+}
+
+/// 꼭짓점으로 잘라 낸 평평한 페이지는 둘레를 잃지 않아야 한다. 바탕 없이 넣으면 모델이 글자 덩어리를
+/// 페이지로 보고 여백과 첫 줄을 잘라 냈다(실제 팜플렛에서 가장자리 4~25%)
+#[test]
+fn 잘라_낸_페이지는_곡면_보정이_둘레를_자르지_않는다() {
+    let Some(models) = models() else {
+        eprintln!("SCANSHELF_MODELS_DIR 없음: 건너뜀");
+        return;
+    };
+    let page = render_page(900, 1250, 7);
+    let padded = dewarp(&page, Dewarp::Normal, Framing::Page, &models).unwrap();
+    let plain = dewarp(&page, Dewarp::Normal, Framing::Photo, &models).unwrap();
+    let resized = |img: &RgbImage| image::imageops::resize(img, page.width(), page.height(), image::imageops::FilterType::Triangle);
+    let (s_page, s_photo) = (ssim(&resized(&padded.image), &page), ssim(&resized(&plain.image), &page));
+    eprintln!("SSIM 바탕 두름 {s_page:.3} / 그대로 {s_photo:.3}");
+    // 글자는 몇 화소만 밀려도 SSIM이 크게 떨어진다. 실측 바탕 두름 0.68, 그대로 0.39
+    assert!(s_page > 0.6, "잘라 낸 페이지가 많이 바뀜: {s_page}");
+    assert!(s_page > s_photo + 0.15, "바탕을 둘러도 나아지지 않음: {s_page} vs {s_photo}");
 }
 
 #[test]
@@ -244,7 +263,7 @@ fn 모델_전후_이미지와_속도() {
     save(&page, "curl_0_flat.png");
     save(&warped, "curl_1_warped.png");
     for (mode, name) in [(Dewarp::Normal, "normal"), (Dewarp::Strong, "strong")] {
-        let r = dewarp(&warped, mode, &models).unwrap();
+        let r = dewarp(&warped, mode, Framing::Photo, &models).unwrap();
         save(&r.image, &format!("curl_2_{name}.png"));
         let filtered = apply_filter(&r.image, Filter::Enhanced);
         save(&filtered, &format!("curl_3_{name}_enhanced.png"));
@@ -299,7 +318,7 @@ fn 모델_전후_이미지와_속도() {
     for (label, m) in [("CoreML 우선", Models::new(PathBuf::from(&dir))), ("CPU", Models::new(PathBuf::from(&dir)).cpu_only())] {
         // 첫 호출은 세션 생성(CoreML 컴파일 포함)이라 따로 잰다
         let start = Instant::now();
-        let _ = dewarp(&RgbImage::new(64, 64), Dewarp::Normal, &m).unwrap();
+        let _ = dewarp(&RgbImage::new(64, 64), Dewarp::Normal, Framing::Page, &m).unwrap();
         let warm = start.elapsed();
         let mut runs = Vec::new();
         for _ in 0..3 {

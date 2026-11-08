@@ -21,7 +21,9 @@ use objc2_image_io::{
     CGImageSource, kCGImageSourceCreateThumbnailFromImageAlways, kCGImageSourceCreateThumbnailWithTransform,
     kCGImageSourceShouldCacheImmediately, kCGImageSourceThumbnailMaxPixelSize,
 };
-use objc2_vision::{VNDetectDocumentSegmentationRequest, VNImageRequestHandler, VNRequest};
+use objc2_vision::{
+    VNDetectDocumentSegmentationRequest, VNDetectRectanglesRequest, VNImageRequestHandler, VNRectangleObservation, VNRequest,
+};
 
 use super::DecodeError;
 
@@ -115,18 +117,47 @@ pub fn detect_document_quad(image: &RgbImage) -> Option<Quad> {
         handler.performRequests_error(&requests).ok()?;
         let results = unsafe { request.results() }?;
         let best = results.iter().max_by(|a, b| unsafe { a.confidence().total_cmp(&b.confidence()) })?;
-        // Vision 좌표는 원점이 왼쪽 아래다. scanshelf 좌표(왼쪽 위)로 뒤집는다
-        let flip = |p: CGPoint| Point {
-            x: p.x.clamp(0.0, 1.0),
-            y: (1.0 - p.y).clamp(0.0, 1.0),
-        };
-        unsafe {
-            Some(Quad {
-                top_left: flip(best.topLeft()),
-                top_right: flip(best.topRight()),
-                bottom_right: flip(best.bottomRight()),
-                bottom_left: flip(best.bottomLeft()),
-            })
-        }
+        Some(to_quad(&best))
     })
+}
+
+/// Vision 사각형 감지. 밝은 책상 위 흰 종이처럼 문서 영역 감지가 놓치는 장을 테두리 직선으로 잡는다.
+/// 펼친 책은 한 쪽씩도 사각형이라 후보를 여러 개 돌려주고 고르기는 부르는 쪽(pipeline::pick_rectangle)이 한다
+pub fn detect_rectangle_quads(image: &RgbImage) -> Vec<Quad> {
+    autoreleasepool(|_| {
+        let cgimage = rgb_to_cgimage(image);
+        let options = NSDictionary::<objc2_foundation::NSString, AnyObject>::new();
+        let handler = unsafe { VNImageRequestHandler::initWithCGImage_options(VNImageRequestHandler::alloc(), &cgimage, &options) };
+        let request = unsafe { VNDetectRectanglesRequest::new() };
+        unsafe {
+            // 펼침(가로 1.4)과 3단 접지(가로 2.1)까지 받는다. Vision 비율은 짧은 변/긴 변
+            request.setMinimumAspectRatio(0.3);
+            request.setMaximumAspectRatio(1.0);
+            request.setMinimumSize(0.2);
+            request.setQuadratureTolerance(30.0);
+            request.setMinimumConfidence(0.5);
+            request.setMaximumObservations(8);
+        }
+        let requests = NSArray::from_slice(&[request.as_ref() as &VNRequest]);
+        if handler.performRequests_error(&requests).is_err() {
+            return Vec::new();
+        }
+        unsafe { request.results() }.map(|r| r.iter().map(|o| to_quad(&o)).collect()).unwrap_or_default()
+    })
+}
+
+/// Vision 좌표는 원점이 왼쪽 아래다. scanshelf 좌표(왼쪽 위)로 뒤집는다
+fn to_quad(observation: &VNRectangleObservation) -> Quad {
+    let flip = |p: CGPoint| Point {
+        x: p.x.clamp(0.0, 1.0),
+        y: (1.0 - p.y).clamp(0.0, 1.0),
+    };
+    unsafe {
+        Quad {
+            top_left: flip(observation.topLeft()),
+            top_right: flip(observation.topRight()),
+            bottom_right: flip(observation.bottomRight()),
+            bottom_left: flip(observation.bottomLeft()),
+        }
+    }
 }

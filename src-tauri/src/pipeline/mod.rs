@@ -194,6 +194,75 @@ fn choose_quad(
     (detected, detected)
 }
 
+/// 다시 찾을 때 줄여서 한 번 더 보는 크기(긴 변). Vision 문서 영역 감지는 같은 사진도 크기에 따라 결과가 바뀐다
+const REDETECT_SIDE: u32 = 2000;
+
+/// Mac이 테두리를 다시 찾는다. 믿을 만한 테두리가 나올 때까지 차례로 시도한다.
+/// 1. 원본 해상도에서 문서 영역 감지
+/// 2. 2000px로 줄여 문서 영역 감지(밝은 책상 위 흰 펼침에서 원본은 틀리고 줄인 쪽이 맞는 경우가 있었다)
+/// 3. 사각형 감지(테두리 직선). 펼침은 한 쪽씩 잡힌 사각형 둘을 합친다
+/// 펼침인데 세로로 긴 테두리(한 쪽만 잡힘, 왼쪽이 검은 표지일 때 흔하다)는 버린다. 한 쪽을 잃느니 사진 전체가 낫다.
+/// @see docs/pipeline.md
+fn find_page_quad(image: &RgbImage, layout: PageLayout) -> Option<Quad> {
+    let aspect = image.height() as f64 / image.width().max(1) as f64;
+    let fits = |q: &Quad| q.is_plausible(aspect) && (layout != PageLayout::Spread || quad_width_ratio(q, aspect) >= 1.0);
+    if let Some(quad) = platform::detect_document_quad(image).filter(fits) {
+        return Some(quad);
+    }
+    let small = image::imageops::thumbnail(
+        image,
+        REDETECT_SIDE.min(image.width()),
+        (REDETECT_SIDE as f64 * aspect).round().min(image.height() as f64) as u32,
+    );
+    if let Some(quad) = platform::detect_document_quad(&small).filter(fits) {
+        return Some(quad);
+    }
+    // 크기마다 잡히는 변이 달라 두 크기의 후보를 모은다
+    let mut rects = platform::detect_rectangle_quads(&small);
+    rects.extend(platform::detect_rectangle_quads(image));
+    pick_rectangle(&rects, aspect, layout)
+}
+
+/// 테두리의 폭/높이(사진 비율을 맞춘 길이)
+fn quad_width_ratio(q: &Quad, aspect: f64) -> f64 {
+    let len = |a: scanshelf_core::Point, b: scanshelf_core::Point| (a.x - b.x).hypot((a.y - b.y) * aspect);
+    let width = (len(q.top_left, q.top_right) + len(q.bottom_left, q.bottom_right)) / 2.0;
+    let height = (len(q.top_left, q.bottom_left) + len(q.top_right, q.bottom_right)) / 2.0;
+    width / height.max(1e-9)
+}
+
+/// 테두리 넓이(사진 폭을 1로 둔 단위)
+fn quad_area(q: &Quad, aspect: f64) -> f64 {
+    let p = q.points().map(|p| (p.x, p.y * aspect));
+    let twice: f64 = (0..4).map(|i| p[i].0 * p[(i + 1) % 4].1 - p[(i + 1) % 4].0 * p[i].1).sum();
+    twice.abs() / 2.0
+}
+
+/// 사각형 감지 후보에서 페이지 테두리를 고른다. 가장 넓은 믿을 만한 사각형을 쓴다.
+/// 펼침은 나란히 붙은 두 쪽(왼쪽 사각형 오른 변이 오른쪽 사각형 왼 변과 겹침)을 합친 펼침 전체도 후보로 넣고,
+/// 세로로 긴 후보(한 쪽만)는 버린다
+fn pick_rectangle(rects: &[Quad], aspect: f64, layout: PageLayout) -> Option<Quad> {
+    /// 두 쪽의 맞닿은 변이 이만큼(사진 폭 대비) 안에 있으면 붙어 있다고 본다
+    const SEAM_GAP: f64 = 0.04;
+    let mut candidates: Vec<Quad> = rects.iter().copied().filter(|q| q.is_plausible(aspect)).collect();
+    if layout == PageLayout::Spread {
+        for a in &candidates.clone() {
+            for b in &candidates.clone() {
+                let touching = (a.top_right.x - b.top_left.x).abs() < SEAM_GAP
+                    && (a.bottom_right.x - b.bottom_left.x).abs() < SEAM_GAP
+                    && (a.top_right.y - b.top_left.y).abs() < SEAM_GAP
+                    && (a.bottom_right.y - b.bottom_left.y).abs() < SEAM_GAP;
+                let joined = Quad { top_left: a.top_left, top_right: b.top_right, bottom_right: b.bottom_right, bottom_left: a.bottom_left };
+                if touching && joined.is_plausible(aspect) {
+                    candidates.push(joined);
+                }
+            }
+        }
+        candidates.retain(|q| quad_width_ratio(q, aspect) >= 1.0);
+    }
+    candidates.into_iter().max_by(|a, b| quad_area(a, aspect).total_cmp(&quad_area(b, aspect)))
+}
+
 /// 이 값이 바뀌면 페이지를 다시 처리한다
 fn fingerprint(dir: &Path, page: &Page, options: &ProcessOptions) -> String {
     let raw = dir.join(&page.raw);
@@ -329,7 +398,7 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
             report(index, "decode");
             let raw_path = dir.join(&page.raw);
             let image = platform::decode_oriented(&raw_path, None).map_err(|e| e.to_string())?;
-            let (quad, detected_quad) = choose_quad(page.quad, &image, platform::detect_document_quad);
+            let (quad, detected_quad) = choose_quad(page.quad, &image, |image| find_page_quad(image, page.layout));
             let mut checks = Vec::new();
             if quad.is_none() {
                 checks.push(steps::PageCheck::QuadMissing);
@@ -516,7 +585,8 @@ mod rotation_tests {
 
 #[cfg(test)]
 mod quad_choice_tests {
-    use super::choose_quad;
+    use super::{choose_quad, pick_rectangle};
+    use scanshelf_core::PageLayout;
     use image::RgbImage;
     use scanshelf_core::{Point, Quad};
 
@@ -553,6 +623,48 @@ mod quad_choice_tests {
     fn mac이_찾은_테두리도_믿지_못하면_사진_전체를_쓴다() {
         assert_eq!(choose_quad(Some(triangle()), &photo(), |_| Some(triangle())), (None, None));
         assert_eq!(choose_quad(None, &photo(), |_| None), (None, None));
+    }
+
+    /// 2026-11-08 로보월드_3 8번(밝은 책상 위 흰 펼침) 사각형 감지 결과. 사진 높이/폭 4:3
+    const ASPECT: f64 = 4.0 / 3.0;
+    fn spread() -> Quad {
+        quad([(0.02, 0.19), (0.94, 0.15), (0.93, 0.64), (0.02, 0.64)])
+    }
+    fn left_page() -> Quad {
+        quad([(0.03, 0.20), (0.48, 0.17), (0.47, 0.62), (0.04, 0.63)])
+    }
+    fn right_page() -> Quad {
+        quad([(0.49, 0.16), (0.92, 0.19), (0.92, 0.62), (0.48, 0.63)])
+    }
+
+    #[test]
+    fn 사각형_후보에서_가장_넓은_펼침_전체를_고른다() {
+        let picked = pick_rectangle(&[right_page(), spread(), left_page()], ASPECT, PageLayout::Spread);
+        assert_eq!(picked, Some(spread()));
+    }
+
+    #[test]
+    fn 펼침_전체가_없으면_나란한_두_쪽을_합친다() {
+        let picked = pick_rectangle(&[right_page(), left_page()], ASPECT, PageLayout::Spread).unwrap();
+        assert_eq!(picked.top_left, left_page().top_left);
+        assert_eq!(picked.top_right, right_page().top_right);
+        assert_eq!(picked.bottom_right, right_page().bottom_right);
+        assert_eq!(picked.bottom_left, left_page().bottom_left);
+    }
+
+    #[test]
+    fn 펼침인데_한_쪽만_잡혔으면_쓰지_않는다() {
+        assert_eq!(pick_rectangle(&[right_page()], ASPECT, PageLayout::Spread), None);
+    }
+
+    #[test]
+    fn 한_쪽으로_찍은_장은_세로_사각형도_쓴다() {
+        assert_eq!(pick_rectangle(&[right_page()], ASPECT, PageLayout::Single), Some(right_page()));
+    }
+
+    #[test]
+    fn 찌그러진_사각형은_고르지_않는다() {
+        assert_eq!(pick_rectangle(&[triangle()], ASPECT, PageLayout::Single), None);
     }
 }
 

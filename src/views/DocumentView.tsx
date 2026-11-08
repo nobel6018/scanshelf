@@ -47,11 +47,11 @@ const FILTER_NAME: Record<Filter, string> = {
 /** 처리하며 확인한 것. review면 사람이 볼 것이라 썸네일에 ! 표시 */
 const CHECK_TEXT: Record<PageCheck, { text: string; review: boolean }> = {
   quadRedetected: { text: "iPhone 꼭짓점이 틀려 Mac이 다시 찾음", review: false },
-  quadMissing: { text: "꼭짓점을 못 찾아 사진 전체를 씀. 꼭짓점 고치기 필요", review: true },
-  quadOnePage: { text: "펼침인데 한 쪽만 잡힌 듯함. 꼭짓점 확인", review: true },
-  notSplit: { text: "접힌 선을 못 찾아 두 쪽으로 나누지 못함", review: true },
-  splitAtSeam: { text: "가운데 이음매에서 나눔. 나눈 자리 확인", review: true },
-  rotationDoubtful: { text: "방향이 애매해 돌리지 않음. 거꾸로면 돌리기", review: true },
+  quadMissing: { text: "종이 테두리를 못 찾아 사진 전체를 씀. 책상이 보이면 꼭짓점 고치기", review: true },
+  quadOnePage: { text: "펼침인데 한 쪽만 잡힌 듯함. 옆 쪽이 잘렸으면 꼭짓점 고치기", review: true },
+  notSplit: { text: "접힌 선을 못 찾아 한 장으로 둠. 두 쪽이 붙어 있으면 '펼친 두 쪽' 확인", review: true },
+  splitAtSeam: { text: "그림자가 없어 가운데 이음매에서 나눔", review: false },
+  rotationDoubtful: { text: "글자 방향이 애매해 돌리지 않음. 거꾸로면 돌리기", review: true },
   photoPage: { text: "사진 페이지라 선명하게 대신 밝기만 맞춤", review: false },
 };
 
@@ -110,14 +110,21 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
 
   const current = items[Math.min(selected, Math.max(0, items.length - 1))];
 
+  const reviewed = detail?.edits.reviewed;
+  const isReviewed = useCallback((page: PageView) => reviewed?.includes(page.id) ?? false, [reviewed]);
+  const needsReview = useCallback(
+    (page: PageView) => !isReviewed(page) && page.checks.some((c) => CHECK_TEXT[c].review),
+    [isReviewed],
+  );
+
   // 사람이 볼 쪽(원본 사진 단위로 첫 출력). 확인 필요 문서를 열면 그 쪽부터 차례로 본다
   const reviewItems = useMemo(
     () =>
       items
         .map((item, index) => ({ item, index }))
-        .filter(({ item }, i, all) => item.page.checks.some((c) => CHECK_TEXT[c].review) && all.findIndex((x) => x.item.page.id === item.page.id) === i)
+        .filter(({ item }, i, all) => needsReview(item.page) && all.findIndex((x) => x.item.page.id === item.page.id) === i)
         .map(({ index }) => index),
-    [items],
+    [items, needsReview],
   );
   const goNextReview = () => {
     if (reviewItems.length === 0) return;
@@ -147,6 +154,17 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
 
   // 도구 막대 단축키(src/shortcuts.ts). 처리 함수는 아래에서 그릴 때마다 최신으로 바꿔 넣는다
   const findRef = useRef<HTMLInputElement>(null);
+  // 페이지는 화면에 맞춰 통째로 보여 준다. 알림 줄 개수에 따라 무대 높이가 바뀌므로 고정 값 대신 잰다
+  const [stage, setStage] = useState<HTMLDivElement | null>(null);
+  const [stageHeight, setStageHeight] = useState(0);
+  const [zoomed, setZoomed] = useState(false);
+  useEffect(() => {
+    if (!stage) return;
+    const observer = new ResizeObserver(() => setStageHeight(stage.clientHeight));
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [stage]);
+  useEffect(() => setZoomed(false), [selected]);
   const toolbar = useRef<Partial<Record<string, () => void>>>({});
   useEffect(() => {
     const names = ["editQuad", "rotatePage", "movePageUp", "movePageDown", "removePage", "toggleText", "findInPage"];
@@ -202,6 +220,16 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
 
   const restorePage = (pageId: string) =>
     saveEdits((edits) => ({ ...edits, deletedPages: (edits.deletedPages ?? []).filter((id) => id !== pageId) }));
+
+  // 사람이 보고 고칠 게 없다고 한 페이지. 확인 표시와 "확인 필요" 목록에서 뺀다
+  const toggleReviewed = (page: PageView) =>
+    saveEdits((edits) => {
+      const reviewed = edits.reviewed ?? [];
+      return {
+        ...edits,
+        reviewed: reviewed.includes(page.id) ? reviewed.filter((id) => id !== page.id) : [...reviewed, page.id],
+      };
+    });
 
   // 이 쪽만 다른 필터. "default"면 문서 처리 옵션을 따른다
   const setPageFilter = (page: PageView, filter: Filter | "default") =>
@@ -330,7 +358,7 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
                 )}
               </div>
               <span className="thumb-label">
-                {item.page.checks.some((c) => CHECK_TEXT[c].review) && (
+                {needsReview(item.page) && (
                   <span className="check-dot" title={item.page.checks.map((c) => CHECK_TEXT[c].text).join("\n")}>
                     !
                   </span>
@@ -407,10 +435,16 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
               </button>
             </div>
           )}
-          <div className="viewer-stage">
+          <div className="viewer-stage" ref={setStage}>
             {current?.output ? (
-              <div className="page-frame">
-                <img src={fileUrl(current.output.image, current.output.processedAt)} alt={`${current.pageIndex + 1}쪽`} />
+              <div className={zoomed ? "page-frame zoomed" : "page-frame"}>
+                <img
+                  src={fileUrl(current.output.image, current.output.processedAt)}
+                  alt={`${current.pageIndex + 1}쪽`}
+                  title={zoomed ? "눌러서 화면에 맞추기" : "눌러서 크게 보기"}
+                  style={zoomed || stageHeight === 0 ? undefined : { maxHeight: stageHeight - 32 }}
+                  onClick={() => setZoomed((z) => !z)}
+                />
                 {hitLines.map((line, i) => (
                   <div
                     key={i}
@@ -448,10 +482,19 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
                 </button>
               )}
               {current.page.checks.map((check) => (
-                <span key={check} className={CHECK_TEXT[check].review ? "check review" : "check"}>
+                <span key={check} className={CHECK_TEXT[check].review && !isReviewed(current.page) ? "check review" : "check"}>
                   {CHECK_TEXT[check].text}
                 </span>
               ))}
+              {current.page.checks.some((c) => CHECK_TEXT[c].review) && (
+                <button
+                  className="link"
+                  onClick={() => toggleReviewed(current.page)}
+                  title="보고 나서 고칠 게 없으면 누릅니다. 확인 필요 목록에서 빠집니다"
+                >
+                  {isReviewed(current.page) ? "확인 취소" : "확인함"}
+                </button>
+              )}
             </div>
           )}
         </div>
