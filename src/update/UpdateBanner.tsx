@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppUpdate } from "./useAppUpdate";
 
@@ -57,6 +58,14 @@ export function UpdateNotes({ update }: { update: AppUpdate }) {
 
 export function UpdateBanner({ update, onError }: { update: AppUpdate; onError: (e: string) => void }) {
   const busy = update.state.kind === "downloading" || update.state.kind === "installing";
+  // "최신 버전입니다"는 확인 결과일 뿐이라 잠깐 보이고 닫는다
+  const latest = update.state.kind === "latest" && !update.error;
+  const { dismiss } = update;
+  useEffect(() => {
+    if (!latest) return;
+    const timer = window.setTimeout(dismiss, 4000);
+    return () => window.clearTimeout(timer);
+  }, [latest, dismiss]);
   return (
     <div className="update-banner" role="status">
       <span>

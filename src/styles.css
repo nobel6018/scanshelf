@@ -348,3 +348,12 @@ mark { background: #ffe58a; border-radius: 2px; }
 .viewer-foot .check { margin-left: 8px; }
 .viewer-foot .check.review { color: #8a4b12; font-weight: 600; }
 .check-dot { display: inline-block; min-width: 16px; height: 16px; margin-right: 4px; border-radius: 8px; background: #8a4b12; color: #fff; font-size: 11px; line-height: 16px; text-align: center; font-weight: 700; }
+
+/* 보관함 머리줄: 제목과 "확인 필요" 걸러 보기 */
+.library-head { display: flex; align-items: center; gap: 12px; }
+.chip { border: 1px solid var(--line); background: var(--paper); border-radius: 999px; padding: 4px 12px; font-size: 13px; color: #8a4b12; cursor: pointer; min-height: 28px; }
+.chip.on { background: #fde8d4; border-color: #e9b98a; font-weight: 600; }
+.doc-company { font-size: 12px; color: var(--accent); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag-more { background: none; border: 0; color: var(--muted); font-size: 12px; padding: 6px 4px 6px 26px; cursor: pointer; min-height: 28px; }
+.tag-more:hover { color: var(--accent); }
+.viewer-foot .link { background: none; border: 0; color: #8a4b12; font-weight: 600; font-size: 12px; padding: 0 0 0 8px; cursor: pointer; text-decoration: underline; min-height: 24px; }

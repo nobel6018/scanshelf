@@ -84,6 +84,13 @@ export function TagTree({ tree, total, untagged, selected, onSelect }: Props) {
       // 저장하지 못해도 이번 실행에서는 접힌다
     }
   };
+  // 문서 하나에만 붙은 태그는 길게 늘어서 자주 쓰는 태그를 가린다(박람회 22개 문서에 태그 50여 개). 접어 두고 더 보기로 연다.
+  // 고른 태그가 그 안에 있으면 펼친다
+  const RARE_MIN_TAGS = 12;
+  const rareAll = tree.length > RARE_MIN_TAGS ? tree.filter((n) => n.count <= 1) : [];
+  const main = tree.filter((n) => !rareAll.includes(n));
+  const rare = rareAll;
+  const [showRare, setShowRare] = useState(() => rare.some((n) => selected !== null && (n.path === selected || selected.startsWith(`${n.path}/`))));
   const current =
     selected === null
       ? { name: "전체", count: total }
@@ -143,7 +150,15 @@ export function TagTree({ tree, total, untagged, selected, onSelect }: Props) {
               <span className="tag-count">{total}</span>
             </div>
           </li>
-          {tree.map((n) => row(n, 0))}
+          {main.map((n) => row(n, 0))}
+          {rare.length > 0 && (
+            <li>
+              <button className="tag-more" aria-expanded={showRare} onClick={() => setShowRare(!showRare)}>
+                {showRare ? "문서 1개 태그 접기" : `문서 1개 태그 ${rare.length}개 더 보기`}
+              </button>
+            </li>
+          )}
+          {showRare && rare.map((n) => row(n, 0))}
           {untagged > 0 && untagged < total && (
             <li>
               <div className={`tag-row ${selected === UNTAGGED ? "selected" : ""}`} style={{ paddingLeft: 4 }}>

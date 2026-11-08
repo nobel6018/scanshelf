@@ -37,6 +37,8 @@ export interface DocumentSummary {
   hasSummary: boolean;
   /** 처리하며 사람이 볼 것이 나온 쪽 수 */
   reviewPages: number;
+  /** 팜플렛 AI 정리의 회사명 */
+  company: string | null;
 }
 
 export interface ProcessOptions {

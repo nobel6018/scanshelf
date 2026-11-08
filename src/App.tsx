@@ -45,6 +45,13 @@ export default function App() {
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  // 알림은 잠깐 보이고 사라진다. 계속 남아 있으면 문서 화면의 페이지를 밀어 내려 아래가 잘렸다(오류는 남긴다).
+  // "~하는 중" 알림은 끝날 때 다른 알림으로 바뀌므로 그대로 둔다
+  useEffect(() => {
+    if (!notice || notice.text.endsWith("중")) return;
+    const timer = window.setTimeout(() => setNotice(null), notice.path ? 10000 : 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
   // 빠른 찾기 창. null이면 닫힘, 문자열이면 그 검색어로 열림
   const [quickOpen, setQuickOpen] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);

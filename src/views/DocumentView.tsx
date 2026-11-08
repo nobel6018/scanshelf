@@ -110,6 +110,20 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
 
   const current = items[Math.min(selected, Math.max(0, items.length - 1))];
 
+  // 사람이 볼 쪽(원본 사진 단위로 첫 출력). 확인 필요 문서를 열면 그 쪽부터 차례로 본다
+  const reviewItems = useMemo(
+    () =>
+      items
+        .map((item, index) => ({ item, index }))
+        .filter(({ item }, i, all) => item.page.checks.some((c) => CHECK_TEXT[c].review) && all.findIndex((x) => x.item.page.id === item.page.id) === i)
+        .map(({ index }) => index),
+    [items],
+  );
+  const goNextReview = () => {
+    if (reviewItems.length === 0) return;
+    setSelected(reviewItems.find((i) => i > selected) ?? reviewItems[0]);
+  };
+
   useEffect(() => {
     setOcr(null);
     if (!current?.output?.hasOcr) return;
@@ -344,11 +358,11 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
               </button>
               <select
                 aria-label="이 쪽 필터"
-                title="이 쪽만 다른 필터로 처리합니다"
+                title={`이 쪽만 다른 필터로 처리합니다. 기본은 처리 옵션의 ${FILTER_NAME[detail.options.filter]}`}
                 value={detail.edits.filters?.[current.page.id] ?? "default"}
                 onChange={(e) => setPageFilter(current.page, e.target.value as Filter | "default")}
               >
-                <option value="default">필터: 문서 설정({FILTER_NAME[detail.options.filter]})</option>
+                <option value="default">필터: 기본</option>
                 {(Object.keys(FILTER_NAME) as Filter[]).map((f) => (
                   <option key={f} value={f}>
                     필터: {FILTER_NAME[f]}
@@ -428,6 +442,11 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
             <div className="viewer-foot hint">
               {current.pageIndex + 1}/{detail.pages.length}쪽 | 꼭짓점: {QUAD_SOURCE[current.page.quadSource]}
               {needle && ocr && ` | 찾은 줄 ${hitLines.length}개`}
+              {reviewItems.length > 0 && (
+                <button className="link" onClick={goNextReview} title="꼭짓점, 나누기, 방향을 볼 다음 쪽">
+                  다음 확인 쪽 (전체 {reviewItems.length}쪽)
+                </button>
+              )}
               {current.page.checks.map((check) => (
                 <span key={check} className={CHECK_TEXT[check].review ? "check review" : "check"}>
                   {CHECK_TEXT[check].text}

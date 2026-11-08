@@ -88,6 +88,8 @@ pub struct DocumentSummary {
     pub has_summary: bool,
     /// 처리하며 사람이 볼 것이 나온 쪽 수(꼭짓점, 나누기, 방향)
     pub review_pages: usize,
+    /// 팜플렛 AI 정리의 회사명. 기본 이름(`묶음_번호`)만으로는 어느 회사인지 몰라 카드에 같이 보인다
+    pub company: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -170,6 +172,11 @@ pub fn summarize(dir: &Path, cache: &Path, pipeline: &Pipeline) -> Result<Docume
         cover,
         has_summary: dir.join(SUMMARY_FILE).exists(),
         review_pages,
+        company: scanshelf_core::fsio::read_json_optional::<scanshelf_core::summary::PamphletSummary>(&dir.join(SUMMARY_FILE))
+            .ok()
+            .flatten()
+            .map(|s| s.company.trim().to_string())
+            .filter(|c| !c.is_empty()),
     })
 }
 

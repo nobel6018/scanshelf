@@ -48,9 +48,13 @@ export function LibraryView({ documents, progress, onOpen, onError, onContextMen
     setTagFilter(path);
     saveTagFilter(path);
   };
+  // 처리하며 사람이 볼 쪽이 나온 문서만 보기(docs/pipeline.md "페이지 확인")
+  const [reviewOnly, setReviewOnly] = useState(false);
+  const reviewCount = documents.filter((d) => d.reviewPages > 0).length;
   const visible = useMemo(
-    () => documents.filter((d) => matchesTag(tagsById[d.id]?.tags, tagFilter)),
-    [documents, tagsById, tagFilter],
+    () =>
+      documents.filter((d) => matchesTag(tagsById[d.id]?.tags, tagFilter) && (!reviewOnly || d.reviewPages > 0)),
+    [documents, tagsById, tagFilter, reviewOnly],
   );
 
   // 세션은 최근 문서가 있는 순서대로. 문서는 이미 최신순으로 온다
@@ -91,11 +95,29 @@ export function LibraryView({ documents, progress, onOpen, onError, onContextMen
     <section className="page library-layout">
       <TagTree tree={tagTree} total={documents.length} untagged={untagged} selected={tagFilter} onSelect={selectTag} />
       <div className="library-main">
-        <h1>보관함</h1>
+        <div className="library-head">
+          <h1>보관함</h1>
+          {(reviewCount > 0 || reviewOnly) && (
+            <button
+              className={reviewOnly ? "chip on" : "chip"}
+              aria-pressed={reviewOnly}
+              title="꼭짓점, 나누기, 방향을 사람이 볼 쪽이 있는 문서"
+              onClick={() => setReviewOnly(!reviewOnly)}
+            >
+              확인 필요 {reviewCount}개
+            </button>
+          )}
+        </div>
         {groups.length === 0 && (
           <p className="empty">
-            이 태그가 붙은 문서가 없습니다.{" "}
-            <button className="ghost" onClick={() => selectTag(null)}>
+            {reviewOnly ? "확인할 문서가 없습니다." : "이 태그가 붙은 문서가 없습니다."}{" "}
+            <button
+              className="ghost"
+              onClick={() => {
+                selectTag(null);
+                setReviewOnly(false);
+              }}
+            >
               전체 보기
             </button>
           </p>
@@ -137,7 +159,10 @@ export function LibraryView({ documents, progress, onOpen, onError, onContextMen
                       </div>
                       <div className="doc-meta">
                         <span className={`badge kind-${doc.kind}`}>{KIND_LABEL[doc.kind]}</span>
-                        <span className={`badge state-${label.tone}`}>{label.text}</span>
+                        {/* 완료는 평소 상태라 띄우지 않는다. 처리 중, 실패, 다시 처리할 때만 보인다 */}
+                        {doc.state.status !== "ready" || progress[doc.id] ? (
+                          <span className={`badge state-${label.tone}`}>{label.text}</span>
+                        ) : null}
                         {doc.reviewPages > 0 && (
                           <span className="badge state-warn" title="꼭짓점, 나누기, 방향을 사람이 볼 쪽이 있습니다">
                             확인 {doc.reviewPages}쪽
@@ -145,9 +170,9 @@ export function LibraryView({ documents, progress, onOpen, onError, onContextMen
                         )}
                       </div>
                       <div className="doc-name">{doc.name}</div>
+                      {doc.company && doc.company !== doc.name && <div className="doc-company">{doc.company}</div>}
                       <div className="doc-sub">
                         {doc.pageCount}장 | {new Date(doc.createdAt).toLocaleDateString("ko-KR")}
-                        {doc.hasSummary && " | AI 정리"}
                       </div>
                     </button>
                   );
