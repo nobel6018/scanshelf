@@ -330,3 +330,16 @@ mark { background: #ffe58a; border-radius: 2px; }
   border: 1px solid var(--line); background: #f6f4ec; color: #1f2a1f; white-space: nowrap;
 }
 .shortcut-foot { margin: 12px 0 0; font-size: 12px; }
+
+/* ⌘ 길게 누르기: 단추 위 단축키 배지(src/views/ShortcutBadges.tsx). 클릭은 아래 단추로 지나간다 */
+.shortcut-badges { position: fixed; inset: 0; z-index: 70; pointer-events: none; }
+.shortcut-badge {
+  position: fixed; transform: translateY(-55%); font: inherit; font-size: 12px; font-weight: 600;
+  padding: 2px 7px; border-radius: 6px; background: #1f2a1f; color: #fffdf7; white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(31, 42, 31, 0.3);
+}
+.shortcut-badge.off { opacity: 0.45; }
+.shortcut-badges-hint {
+  position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); font-size: 12px;
+  padding: 6px 12px; border-radius: 999px; background: rgba(31, 42, 31, 0.85); color: #fffdf7;
+}

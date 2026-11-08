@@ -28,7 +28,7 @@ export function ShortcutOverlay({ screen, sticky, onClose }: { screen: Screen; s
             </section>
           ))}
         </div>
-        <p className="hint shortcut-foot">{sticky ? "Esc나 바깥을 누르면 닫힙니다" : "⌘에서 손을 떼면 닫힙니다"}</p>
+        <p className="hint shortcut-foot">{sticky ? "Esc나 바깥을 누르면 닫힙니다. ⌘를 길게 누르면 단추마다 단축키가 보입니다" : "⌘에서 손을 떼면 닫힙니다"}</p>
       </div>
     </div>
   );

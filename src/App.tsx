@@ -15,6 +15,7 @@ import {
   type CommandName,
 } from "./shortcuts";
 import { ShortcutOverlay } from "./views/ShortcutOverlay";
+import { ShortcutBadges } from "./views/ShortcutBadges";
 import type { AppAction, DocumentSummary, Progress } from "./types";
 import { UpdateBanner } from "./update/UpdateBanner";
 import { useAppUpdate } from "./update/useAppUpdate";
@@ -39,7 +40,7 @@ interface Notice {
 
 export default function App() {
   const [route, setRoute] = useState<Route>({ view: "library" });
-  /** 단축키 오버레이. hold는 ⌘를 누르는 동안만, sticky는 ? 키나 메뉴로 연 것 */
+  /** 단축키 보기. hold는 ⌘를 누르는 동안 단추 위 배지, sticky는 ? 키나 메뉴로 연 전체 목록 */
   const [overlay, setOverlay] = useState<"hold" | "sticky" | null>(null);
   const [documents, setDocuments] = useState<DocumentSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -283,7 +284,7 @@ export default function App() {
     };
   }, [modalOpen, screen]);
 
-  // ⌘를 혼자 0.8초 누르고 있으면 단축키 목록을 띄우고, 떼면 닫는다. 다른 키와 같이 누르면(⌘K 등) 띄우지 않는다
+  // ⌘를 혼자 0.8초 누르고 있으면 단추마다 단축키 배지를 띄우고, 떼면 닫는다. 다른 키와 같이 누르면(⌘K 등) 띄우지 않는다
   useEffect(() => {
     let timer: number | undefined;
     const cancel = () => {
@@ -350,8 +351,10 @@ export default function App() {
     return () => window.removeEventListener("contextmenu", onMenu);
   }, []);
 
+  const NAV_COMMAND: Record<Route["view"], CommandName> = { library: "library", search: "search", settings: "settings", document: "library" };
   const nav = (target: Route["view"], label: string) => (
     <button
+      data-shortcut={NAV_COMMAND[target]}
       className={route.view === target || (target === "library" && route.view === "document") ? "nav active" : "nav"}
       onClick={() => setRoute({ view: target } as Route)}
     >
@@ -367,10 +370,10 @@ export default function App() {
         {nav("search", "검색")}
         {nav("settings", "설정")}
         <div className="spacer" />
-        <button className="nav nav-action" onClick={() => setQuickOpen("")}>
+        <button className="nav nav-action" data-shortcut="quickOpen" onClick={() => setQuickOpen("")}>
           빠른 찾기 <span className="nav-key">{labelFor("quickOpen")}</span>
         </button>
-        <button className="nav nav-action" onClick={pickAndImport}>
+        <button className="nav nav-action" data-shortcut="import" onClick={pickAndImport}>
           가져오기 <span className="nav-key">{labelFor("import")}</span>
         </button>
       </aside>
@@ -451,7 +454,8 @@ export default function App() {
           <div className="drop-card">놓으면 보관함으로 가져옵니다 (jpg, png, heic, PDF)</div>
         </div>
       )}
-      {overlay && <ShortcutOverlay screen={screen} sticky={overlay === "sticky"} onClose={() => setOverlay(null)} />}
+      {overlay === "hold" && <ShortcutBadges screen={screen} />}
+      {overlay === "sticky" && <ShortcutOverlay screen={screen} sticky onClose={() => setOverlay(null)} />}
       {/* ⌘J 모든 문서에 질문(docs/ask.md). 다른 곳에서는 openAsk()로 연다 */}
       <AskWindow documents={documents} onOpen={(id, outputId) => setRoute({ view: "document", id, outputId: outputId ?? undefined })} />
     </div>
