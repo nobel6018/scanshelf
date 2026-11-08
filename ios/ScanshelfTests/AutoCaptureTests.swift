@@ -15,14 +15,16 @@ struct AutoCaptureTests {
         quad: Quad?? = .none,
         motion: Double = 0,
         hand: Bool = false,
-        distance: Float? = nil
+        distance: Float? = nil,
+        pageDistance: Float? = nil
     ) -> FrameMeasurement {
         FrameMeasurement(
             time: time,
             quad: quad ?? page,
             motion: motion,
             handVisible: hand,
-            distanceFromLastCapture: distance
+            distanceFromLastCapture: distance,
+            pageDistanceFromLastCapture: pageDistance
         )
     }
 
@@ -222,5 +224,125 @@ struct AutoCaptureTests {
         let decisions = run(&engine, from: 0, to: 1.2) { frame($0, quad: .some(sheet)) }
 
         #expect(decisions.contains(.capture))
+    }
+    // MARK: 테두리를 믿을 수 없거나 화면 밖으로 나간 종이 (2026-11-08 실제 촬영에서 나온 경우)
+
+    /// 로보월드_3 8번: 흰 면 쪽 꼭짓점을 접힌 선에 붙인 삼각형
+    private let triangle = Quad(
+        topLeft: .init(x: 0.444, y: 0.164),
+        topRight: .init(x: 0.486, y: 0.164),
+        bottomRight: .init(x: 0.924, y: 0.629),
+        bottomLeft: .init(x: 0.028, y: 0.633)
+    )
+
+    /// 로보월드_2 1번: 양옆이 화면 밖으로 나간 3단 접지
+    private let cutOffSheet = Quad(
+        topLeft: .init(x: 0.007, y: 0.172),
+        topRight: .init(x: 1.0, y: 0.164),
+        bottomRight: .init(x: 1.0, y: 0.578),
+        bottomLeft: .init(x: 0.007, y: 0.590)
+    )
+
+    @Test func 꼭짓점을_잘못_잡은_테두리로는_찍지_않는다() {
+        var engine = AutoCaptureEngine()
+
+        let decisions = run(&engine, from: 0, to: 2) { frame($0, quad: .some(triangle)) }
+
+        #expect(!decisions.contains(.capture))
+        #expect(engine.status == .unclearEdges)
+    }
+
+    @Test func 종이가_화면_밖으로_나가면_찍지_않는다() {
+        for sensitivity in AutoCaptureSensitivity.allCases {
+            var engine = AutoCaptureEngine(tuning: sensitivity.tuning)
+
+            let decisions = run(&engine, from: 0, to: 2) { frame($0, quad: .some(cutOffSheet)) }
+
+            #expect(!decisions.contains(.capture), "민감도 \(sensitivity.rawValue)")
+            #expect(engine.status == .cutOff)
+        }
+    }
+
+    @Test func 손이_보이면_테두리보다_손_안내가_먼저다() {
+        var engine = AutoCaptureEngine()
+
+        _ = engine.process(frame(0, quad: .some(triangle), hand: true))
+
+        #expect(engine.status == .handVisible)
+    }
+
+    // MARK: 같은 장을 옮기거나 돌려 다시 놓기
+
+    private func shifted(_ quad: Quad, by dx: Double) -> Quad {
+        Quad(
+            topLeft: .init(x: quad.topLeft.x + dx, y: quad.topLeft.y),
+            topRight: .init(x: quad.topRight.x + dx, y: quad.topRight.y),
+            bottomRight: .init(x: quad.bottomRight.x + dx, y: quad.bottomRight.y),
+            bottomLeft: .init(x: quad.bottomLeft.x + dx, y: quad.bottomLeft.y)
+        )
+    }
+
+    /// 한 장을 찍고, 손으로 종이를 만진 뒤 다시 안정될 때까지의 결정
+    private func replaceScenario(
+        quad: Quad,
+        distance: Float,
+        pageDistance: Float
+    ) -> (decisions: [AutoCaptureDecision], engine: AutoCaptureEngine) {
+        var engine = AutoCaptureEngine()
+        let first = run(&engine, from: 0, to: 0.6) { frame($0) }
+        #expect(first.last == .capture)
+        engine.captureFinished(succeeded: true)
+        _ = run(&engine, from: 0.7, to: 1.0) { frame($0, hand: true, distance: 0.3) }
+        let decisions = run(&engine, from: 1.1, to: 2.0) {
+            frame($0, quad: .some(quad), distance: distance, pageDistance: pageDistance)
+        }
+        return (decisions, engine)
+    }
+
+    @Test func 옮겨_놓은_같은_장은_찍고_앞_장을_지울지_묻는다() {
+        let moved = shifted(page, by: -0.08)
+
+        let result = replaceScenario(quad: moved, distance: 0.5, pageDistance: 0.25)
+
+        #expect(result.decisions.contains(.captureRepeat))
+        #expect(!result.decisions.contains(.capture))
+    }
+
+    @Test func 제자리에_놓인_다음_장은_묻지_않고_찍는다() {
+        // 사양표가 이어지는 카탈로그는 보정 영역 거리가 가까울 수 있다(2026-11-08 로보월드_1 7번과 8번 0.27)
+        let result = replaceScenario(quad: page, distance: 0.5, pageDistance: 0.27)
+
+        #expect(result.decisions.contains(.capture))
+        #expect(!result.decisions.contains(.captureRepeat))
+    }
+
+    @Test func 옮겨_놓았어도_다른_장이면_그냥_찍는다() {
+        let moved = shifted(page, by: -0.08)
+
+        let result = replaceScenario(quad: moved, distance: 0.6, pageDistance: 0.6)
+
+        #expect(result.decisions.contains(.capture))
+    }
+
+    @Test func 보정_영역_거리는_찍기_전_안정을_기다릴_때만_잰다() {
+        var engine = AutoCaptureEngine()
+        #expect(!engine.wantsPageDistance)
+        _ = run(&engine, from: 0, to: 0.6) { frame($0) }
+        engine.captureFinished(succeeded: true)
+        #expect(!engine.wantsPageDistance)
+
+        _ = engine.process(frame(0.7, hand: true))
+        _ = engine.process(frame(0.8, distance: 0.8))
+
+        #expect(engine.wantsPageDistance)
+    }
+
+    @Test func 수동_셔터는_테두리를_기억해_다음_판단에_쓴다() {
+        var engine = AutoCaptureEngine()
+
+        engine.manualCaptureStarted(quad: page)
+        engine.captureFinished(succeeded: true)
+
+        #expect(engine.lastCaptureQuad == page)
     }
 }

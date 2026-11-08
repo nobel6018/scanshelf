@@ -52,9 +52,12 @@ final class FrameAnalyzer: @unchecked Sendable {
     private var previousThumbnail: [UInt8]?
     private var lastFrame: AnalysisFrame?
     private var lastCapturePrint: VNFeaturePrintObservation?
+    /// 직전 촬영본의 테두리 안쪽을 원근 보정해 만든 프린트. 종이를 옮기거나 돌려 다시 놓아도 같은 장이면 가깝다
+    private var lastCapturePagePrint: VNFeaturePrintObservation?
+    private var lastQuad: Quad?
     private var lastCaptureHintPage: Int?
 
-    func analyze(_ frame: AnalysisFrame, wantsDistance: Bool) -> FrameAnalysis {
+    func analyze(_ frame: AnalysisFrame, wantsDistance: Bool, wantsPageDistance: Bool = false) -> FrameAnalysis {
         lock.lock()
         defer { lock.unlock() }
         lastFrame = frame
@@ -81,6 +84,7 @@ final class FrameAnalyzer: @unchecked Sendable {
             usedHint = true
         }
 
+        lastQuad = quad
         let motion = measureMotion(frame)
         var distance: Float?
         if wantsDistance, let hint = frame.hint, let page = lastCaptureHintPage {
@@ -92,13 +96,25 @@ final class FrameAnalyzer: @unchecked Sendable {
             }
         }
 
+        var pageDistance: Float?
+        if wantsPageDistance, let hint = frame.hint, let page = lastCaptureHintPage {
+            pageDistance = hint.pageNumber == page ? 0 : 1
+        } else if wantsPageDistance, let reference = lastCapturePagePrint, let quad,
+                  let print = pagePrint(frame, quad: quad) {
+            var value: Float = 0
+            if (try? print.computeDistance(&value, to: reference)) != nil {
+                pageDistance = value
+            }
+        }
+
         return FrameAnalysis(
             measurement: FrameMeasurement(
                 time: frame.time,
                 quad: quad,
                 motion: motion,
                 handVisible: hand,
-                distanceFromLastCapture: distance
+                distanceFromLastCapture: distance,
+                pageDistanceFromLastCapture: pageDistance
             ),
             usedHint: usedHint
         )
@@ -114,12 +130,14 @@ final class FrameAnalyzer: @unchecked Sendable {
             return
         }
         lastCapturePrint = featurePrint(makeHandler(lastFrame))
+        lastCapturePagePrint = lastQuad.flatMap { pagePrint(lastFrame, quad: $0) }
     }
 
     func forgetCapture() {
         lock.lock()
         defer { lock.unlock() }
         lastCapturePrint = nil
+        lastCapturePagePrint = nil
         lastCaptureHintPage = nil
     }
 
@@ -144,6 +162,31 @@ final class FrameAnalyzer: @unchecked Sendable {
         case let .pixelBuffer(buffer): VNImageRequestHandler(cvPixelBuffer: buffer, orientation: frame.orientation)
         case let .cgImage(image): VNImageRequestHandler(cgImage: image, orientation: frame.orientation)
         }
+    }
+
+    /// 테두리 안쪽을 원근 보정해 잘라 낸 종이의 프린트. 믿지 못할 테두리면 재지 않는다
+    private func pagePrint(_ frame: AnalysisFrame, quad: Quad) -> VNFeaturePrintObservation? {
+        guard QuadGeometry.isPlausible(quad) else { return nil }
+        let source: CIImage = switch frame.image {
+        case let .pixelBuffer(buffer): CIImage(cvPixelBuffer: buffer)
+        case let .cgImage(cgImage): CIImage(cgImage: cgImage)
+        }
+        // quad는 표시 방향 기준이라 버퍼도 표시 방향으로 세운다. Core Image 좌표는 원점이 왼쪽 아래다
+        let image = source.oriented(frame.orientation)
+        let extent = image.extent
+        func point(_ p: NormalizedPoint) -> CIVector {
+            CIVector(x: extent.minX + p.x * extent.width, y: extent.minY + (1 - p.y) * extent.height)
+        }
+        guard let filter = CIFilter(name: "CIPerspectiveCorrection") else { return nil }
+        filter.setValue(image, forKey: kCIInputImageKey)
+        filter.setValue(point(quad.topLeft), forKey: "inputTopLeft")
+        filter.setValue(point(quad.topRight), forKey: "inputTopRight")
+        filter.setValue(point(quad.bottomRight), forKey: "inputBottomRight")
+        filter.setValue(point(quad.bottomLeft), forKey: "inputBottomLeft")
+        guard let page = filter.outputImage, !page.extent.isEmpty,
+              let cgImage = context.createCGImage(page, from: page.extent)
+        else { return nil }
+        return featurePrint(VNImageRequestHandler(cgImage: cgImage, orientation: .up))
     }
 
     private func featurePrint(_ handler: VNImageRequestHandler) -> VNFeaturePrintObservation? {

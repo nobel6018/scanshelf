@@ -104,6 +104,9 @@ struct CaptureView: View {
                         .background(.black.opacity(0.5), in: .capsule)
                 }
                 Spacer()
+                if model.repeatOffer != nil {
+                    repeatOfferBar
+                }
                 statusLabel
             }
             .padding(10)
@@ -129,6 +132,24 @@ struct CaptureView: View {
             .accessibilityIdentifier("captureStatus")
     }
 
+    /// 방금 찍은 장이 앞 장을 옮기거나 돌려 다시 놓은 것으로 보일 때. 비슷한 다음 장일 수도 있어 사람이 고른다
+    private var repeatOfferBar: some View {
+        HStack(spacing: 8) {
+            Text("앞 장을 다시 놓았나요?")
+                .font(.callout.weight(.medium))
+            Button("앞 장 지우기") { model.deleteRepeatedPage() }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("deleteRepeatedPage")
+            Button("그대로 두기", systemImage: "xmark") { model.dismissRepeatOffer() }
+                .labelStyle(.iconOnly)
+                .frame(minWidth: 44, minHeight: 44)
+        }
+        .padding(.horizontal, 12)
+        .background(.black.opacity(0.7), in: .capsule)
+    }
+
     private var statusText: String {
         if model.retakeTarget != nil, model.status != .capturing {
             return "다시 찍을 장을 놓아 주세요"
@@ -140,6 +161,8 @@ struct CaptureView: View {
         return switch model.status {
         case .noDocument: "종이를 놓아 주세요"
         case .handVisible: "손을 치워 주세요"
+        case .unclearEdges: "모서리를 찾는 중입니다"
+        case .cutOff: "종이 전체가 화면에 들어오게 놓아 주세요"
         case .moving: "움직임이 멈추기를 기다립니다"
         case let .steadying(progress): progress < 0.05 ? "멈추면 찍습니다" : "곧 찍습니다"
         case .capturing: "찍는 중"
@@ -150,7 +173,7 @@ struct CaptureView: View {
     private var statusColor: Color {
         switch model.status {
         case .steadying, .capturing: .green
-        case .handVisible, .moving: .yellow
+        case .handVisible, .moving, .unclearEdges, .cutOff: .yellow
         default: .white
         }
     }

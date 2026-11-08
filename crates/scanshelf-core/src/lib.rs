@@ -77,8 +77,56 @@ pub struct Quad {
 }
 
 impl Quad {
+    /// 마주 보는 두 변 길이의 비(짧은 쪽/긴 쪽) 하한. 거치대에서 내려다본 종이는 원근이 약해 2026-11-08 촬영 154장 중
+    /// 정상 장은 모두 0.89 이상이었고, 꼭짓점을 잘못 잡은 장은 0.01~0.52였다
+    pub const MIN_OPPOSITE_SIDE_RATIO: f64 = 0.8;
+    /// 내각 범위(도). 정상 장은 84~96도, 잘못 잡은 장은 38~167도였다
+    pub const MIN_CORNER_DEGREES: f64 = 65.0;
+    pub const MAX_CORNER_DEGREES: f64 = 115.0;
+
     pub fn points(&self) -> [Point; 4] {
         [self.top_left, self.top_right, self.bottom_right, self.bottom_left]
+    }
+
+    /// 종이 테두리로 믿을 만한가. 볼록하고, 마주 보는 변 길이가 비슷하고, 내각이 직각에 가까워야 한다.
+    /// Vision이 흰 면이나 어두운 표지의 꼭짓점을 못 찾으면 접힌 선에 꼭짓점을 붙인 삼각형, 사다리꼴을 내는데
+    /// 이걸로 펴면 페이지가 찢긴 것처럼 나온다. 그런 테두리는 버리고 다시 찾거나 사진 전체를 쓴다.
+    /// `aspect`는 사진의 높이/폭이다. 정규화 좌표는 가로세로 단위가 달라 길이와 각도를 재기 전에 맞춘다.
+    /// iPhone `QuadGeometry.isPlausible`과 같은 기준이다. @see docs/capture.md
+    pub fn is_plausible(&self, aspect: f64) -> bool {
+        let p = self.points().map(|q| (q.x, q.y * aspect));
+        let side = |i: usize| {
+            let (a, b) = (p[i], p[(i + 1) % 4]);
+            ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
+        };
+        let sides = [side(0), side(1), side(2), side(3)];
+        if sides.iter().any(|s| *s < 1e-6) {
+            return false;
+        }
+        let ratio = |a: f64, b: f64| a.min(b) / a.max(b);
+        if ratio(sides[0], sides[2]) < Self::MIN_OPPOSITE_SIDE_RATIO
+            || ratio(sides[1], sides[3]) < Self::MIN_OPPOSITE_SIDE_RATIO
+        {
+            return false;
+        }
+        let mut sign = 0.0f64;
+        for i in 0..4 {
+            let (prev, at, next) = (p[(i + 3) % 4], p[i], p[(i + 1) % 4]);
+            let (ax, ay) = (prev.0 - at.0, prev.1 - at.1);
+            let (bx, by) = (next.0 - at.0, next.1 - at.1);
+            let cross = ax * by - ay * bx;
+            if sign == 0.0 {
+                sign = cross.signum();
+            } else if cross.signum() != sign {
+                return false;
+            }
+            let cos = (ax * bx + ay * by) / (side((i + 3) % 4) * side(i));
+            let degrees = cos.clamp(-1.0, 1.0).acos().to_degrees();
+            if !(Self::MIN_CORNER_DEGREES..=Self::MAX_CORNER_DEGREES).contains(&degrees) {
+                return false;
+            }
+        }
+        true
     }
 }
 

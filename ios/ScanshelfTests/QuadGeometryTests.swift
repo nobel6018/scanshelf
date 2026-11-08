@@ -1,3 +1,4 @@
+import Foundation
 import CoreGraphics
 import ImageIO
 import Testing
@@ -79,5 +80,66 @@ struct QuadGeometryTests {
         )
 
         #expect(abs(quad.area - 0.25) < 1e-9)
+    }
+    // MARK: 테두리 타당성. fixtures/quad-plausibility.json은 2026-11-08 실제 촬영값이고 Rust(crates/scanshelf-core/tests/quad.rs)도 읽는다
+
+    private struct PlausibilityFixture: Decodable {
+        struct Case: Decodable {
+            var name: String
+            var quad: Quad
+            var plausible: Bool
+            var cutOff: Bool
+        }
+
+        var aspect: Double
+        var cases: [Case]
+    }
+
+    private func plausibilityFixture() throws -> PlausibilityFixture {
+        let url = URL(filePath: #filePath)
+            .deletingLastPathComponent()
+            .appending(path: "../../fixtures/quad-plausibility.json")
+            .standardized
+        return try JSONDecoder().decode(PlausibilityFixture.self, from: Data(contentsOf: url))
+    }
+
+    @Test func 실제_촬영의_테두리를_정상과_잘못_잡은_것으로_가른다() throws {
+        let fixture = try plausibilityFixture()
+        #expect(fixture.aspect == QuadGeometry.captureAspect)
+        for item in fixture.cases {
+            #expect(QuadGeometry.isPlausible(item.quad, aspect: fixture.aspect) == item.plausible, "\(item.name)")
+        }
+    }
+
+    @Test func 화면_밖으로_나간_종이를_가려낸다() throws {
+        for item in try plausibilityFixture().cases {
+            #expect(QuadGeometry.touchesFrameEdge(item.quad) == item.cutOff, "\(item.name)")
+        }
+    }
+
+    @Test func 꼬이거나_겹친_꼭짓점은_믿지_않는다() {
+        let twisted = Quad(
+            topLeft: .init(x: 0.2, y: 0.2),
+            topRight: .init(x: 0.8, y: 0.6),
+            bottomRight: .init(x: 0.8, y: 0.2),
+            bottomLeft: .init(x: 0.2, y: 0.6)
+        )
+        let collapsed = Quad(
+            topLeft: .init(x: 0.3, y: 0.2),
+            topRight: .init(x: 0.3, y: 0.2),
+            bottomRight: .init(x: 0.8, y: 0.6),
+            bottomLeft: .init(x: 0.2, y: 0.6)
+        )
+
+        #expect(!QuadGeometry.isPlausible(twisted))
+        #expect(!QuadGeometry.isPlausible(collapsed))
+    }
+
+    @Test func 꼭짓점_이동은_세로_비율을_맞춰_잰다() {
+        let a = Quad(topLeft: .init(x: 0.1, y: 0.1), topRight: .init(x: 0.9, y: 0.1), bottomRight: .init(x: 0.9, y: 0.7), bottomLeft: .init(x: 0.1, y: 0.7))
+        var b = a
+        b.bottomLeft.y += 0.03
+
+        #expect(abs(QuadGeometry.largestCornerShift(a, b) - 0.04) < 1e-9)
     }
 }

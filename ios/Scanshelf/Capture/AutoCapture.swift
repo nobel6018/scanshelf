@@ -82,6 +82,9 @@ struct FrameMeasurement: Equatable, Sendable {
     var handVisible: Bool
     /// 직전 촬영본과의 feature print 거리. 직전 촬영본이 없거나 아직 재지 않았으면 nil
     var distanceFromLastCapture: Float?
+    /// 테두리 안쪽만 원근 보정해 잰 직전 촬영본과의 거리. 종이를 옮기거나 돌려도 같은 장이면 가깝다.
+    /// 다시 놓은 장인지 볼 때만 잰다(`wantsPageDistance`)
+    var pageDistanceFromLastCapture: Float? = nil
 }
 
 enum AutoCapturePhase: Equatable, Sendable {
@@ -96,6 +99,9 @@ enum AutoCapturePhase: Equatable, Sendable {
 enum AutoCaptureDecision: Equatable, Sendable {
     case none
     case capture
+    /// 찍는다. 다만 직전 장을 옮기거나 돌려 다시 놓은 것으로 보인다. 화면은 앞 장을 지울지 묻는다.
+    /// 레이아웃이 비슷한 다음 장(사양표가 이어지는 카탈로그)도 이렇게 보일 수 있어 스스로 지우지는 않는다
+    case captureRepeat
     /// 안정됐지만 직전 촬영본과 같은 장이라 찍지 않았다
     case skippedDuplicate
 }
@@ -104,6 +110,10 @@ enum AutoCaptureDecision: Equatable, Sendable {
 enum AutoCaptureStatus: Equatable, Sendable {
     case noDocument
     case handVisible
+    /// 테두리를 찾았지만 사각형으로 믿을 수 없다(흰 면, 어두운 표지에서 꼭짓점을 잘못 잡음)
+    case unclearEdges
+    /// 종이 일부가 화면 밖으로 나갔다
+    case cutOff
     case moving
     case steadying(progress: Double)
     case capturing
@@ -116,6 +126,10 @@ struct AutoCaptureEngine: Sendable {
     private(set) var status: AutoCaptureStatus = .noDocument
     /// 직전 촬영본이 있는가. 있으면 찍기 전에 거리를 재야 한다
     private(set) var hasLastCapture = false
+    /// 직전 촬영 때의 테두리. 다시 놓은 장인지 판단한다
+    private(set) var lastCaptureQuad: Quad?
+    /// 셔터를 누른 순간의 테두리. 사진이 저장되면 `lastCaptureQuad`가 된다
+    private var capturingQuad: Quad?
 
     init(tuning: AutoCaptureTuning = .normal) {
         self.tuning = tuning
@@ -129,6 +143,12 @@ struct AutoCaptureEngine: Sendable {
         case let .waiting(steadySince): return steadySince != nil
         case .capturing: return false
         }
+    }
+
+    /// 원근 보정한 영역의 프린트는 또 수십 ms라 찍기 직전 안정을 기다리는 동안만 잰다
+    var wantsPageDistance: Bool {
+        guard hasLastCapture, lastCaptureQuad != nil, case let .waiting(steadySince) = phase else { return false }
+        return steadySince != nil
     }
 
     mutating func process(_ frame: FrameMeasurement) -> AutoCaptureDecision {
@@ -167,16 +187,30 @@ struct AutoCaptureEngine: Sendable {
                     return .skippedDuplicate
                 }
             }
+            capturingQuad = frame.quad
             phase = .capturing
             status = .capturing
-            return .capture
+            return isRepeat(frame) ? .captureRepeat : .capture
         }
+    }
+
+    /// 같은 장을 옮기거나 돌려 다시 놓았는가. 테두리가 의미 있게 움직였고, 보정한 영역이 직전 촬영본과 가깝다.
+    /// 그대로 둔 같은 장은 그 전에 전체 화면 거리로 건너뛴다
+    private func isRepeat(_ frame: FrameMeasurement) -> Bool {
+        guard hasLastCapture,
+              let previous = lastCaptureQuad,
+              let quad = frame.quad,
+              let distance = frame.pageDistanceFromLastCapture
+        else { return false }
+        return QuadGeometry.largestCornerShift(previous, quad) > QuadGeometry.replacedShift
+            && distance < tuning.duplicateDistance
     }
 
     /// 자동이든 수동이든 사진이 저장되면 부른다. 실패하면 다시 기다린다
     mutating func captureFinished(succeeded: Bool) {
         if succeeded {
             hasLastCapture = true
+            lastCaptureQuad = capturingQuad
             phase = .waitingForChange
             status = .waitingForChange
         } else {
@@ -186,7 +220,8 @@ struct AutoCaptureEngine: Sendable {
     }
 
     /// 수동 셔터를 누른 순간. 자동 판단이 같은 장을 겹쳐 찍지 않게 막는다
-    mutating func manualCaptureStarted() {
+    mutating func manualCaptureStarted(quad: Quad? = nil) {
+        capturingQuad = quad
         phase = .capturing
         status = .capturing
     }
@@ -194,12 +229,15 @@ struct AutoCaptureEngine: Sendable {
     /// 새 문서를 시작했거나 마지막 장을 지웠다. 같은 장을 다시 찍을 수 있어야 한다
     mutating func forgetLastCapture() {
         hasLastCapture = false
+        lastCaptureQuad = nil
         phase = .waiting(steadySince: nil)
     }
 
     private func blockingStatus(_ frame: FrameMeasurement) -> AutoCaptureStatus? {
         guard let quad = frame.quad, quad.area >= tuning.minimumDocumentArea else { return .noDocument }
         if frame.handVisible { return .handVisible }
+        if !QuadGeometry.isPlausible(quad) { return .unclearEdges }
+        if QuadGeometry.touchesFrameEdge(quad) { return .cutOff }
         if frame.motion > tuning.stillMotion { return .moving }
         return nil
     }

@@ -97,6 +97,26 @@ pub fn detected_quads(cache: &Path, document_id: &str) -> HashMap<Uuid, Quad> {
         .collect()
 }
 
+/// iPhone 사진의 높이/폭(세로 4:3)
+const IPHONE_PHOTO_ASPECT: f64 = 4.0 / 3.0;
+
+/// 처리에 쓸 테두리와, Mac이 새로 감지했으면 그 값.
+/// iPhone이 준 테두리가 믿을 만하지 않으면(흰 면, 어두운 표지에서 꼭짓점을 접힌 선에 붙인 삼각형 등) Mac이 원본 해상도에서 다시 찾고,
+/// 그것도 믿을 만하지 않으면 테두리 없이 사진 전체를 쓴다. 찢긴 페이지보다 배경이 조금 남은 페이지가 낫다.
+/// @see docs/pipeline.md, docs/capture.md
+fn choose_quad(
+    manifest_quad: Option<Quad>,
+    image: &RgbImage,
+    detect: impl FnOnce(&RgbImage) -> Option<Quad>,
+) -> (Option<Quad>, Option<Quad>) {
+    let aspect = image.height() as f64 / image.width().max(1) as f64;
+    if let Some(quad) = manifest_quad.filter(|q| q.is_plausible(aspect)) {
+        return (Some(quad), None);
+    }
+    let detected = detect(image).filter(|q| q.is_plausible(aspect));
+    (detected, detected)
+}
+
 /// 이 값이 바뀌면 페이지를 다시 처리한다
 fn fingerprint(dir: &Path, page: &Page, options: &ProcessOptions) -> String {
     let raw = dir.join(&page.raw);
@@ -110,7 +130,7 @@ fn fingerprint(dir: &Path, page: &Page, options: &ProcessOptions) -> String {
             (m.len(), modified)
         })
         .unwrap_or((0, 0));
-    let input = serde_json::json!({
+    let mut input = serde_json::json!({
         "pipeline": PIPELINE_VERSION,
         "raw": page.raw,
         "len": len,
@@ -120,6 +140,11 @@ fn fingerprint(dir: &Path, page: &Page, options: &ProcessOptions) -> String {
         "extraRotation": page.extra_rotation,
         "options": options,
     });
+    // 믿지 못할 테두리로 이미 처리한 장(v0.3.1까지)을 다시 처리하게 한다. 정상 장은 지문이 그대로라 다시 하지 않는다.
+    // 원본을 열지 않으려고 iPhone 사진 비율(세로 4:3)로 판단한다. 실제 선택은 choose_quad가 원본 비율로 한다
+    if page.quad.is_some_and(|q| !q.is_plausible(IPHONE_PHOTO_ASPECT)) {
+        input["quadRejected"] = serde_json::Value::Bool(true);
+    }
     hex::encode(Sha256::digest(input.to_string().as_bytes()))
 }
 
@@ -225,14 +250,7 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
             report(index, "decode");
             let raw_path = dir.join(&page.raw);
             let image = platform::decode_oriented(&raw_path, None).map_err(|e| e.to_string())?;
-            let mut detected_quad = None;
-            let quad = match page.quad {
-                Some(q) => Some(q),
-                None => {
-                    detected_quad = platform::detect_document_quad(&image);
-                    detected_quad
-                }
-            };
+            let (quad, detected_quad) = choose_quad(page.quad, &image, platform::detect_document_quad);
             report(index, "correct");
             let votes: Vec<u16> = manifest.pages.iter().filter_map(|p| state.pages.get(&p.id)?.rotation).collect();
             let document_turn = document_rotation(&votes);
@@ -386,5 +404,47 @@ mod rotation_tests {
         assert_eq!(document_rotation(&[90]), None);
         assert_eq!(document_rotation(&[90, 90, 180, 180]), None);
         assert_eq!(document_rotation(&[]), None);
+    }
+}
+
+#[cfg(test)]
+mod quad_choice_tests {
+    use super::choose_quad;
+    use image::RgbImage;
+    use scanshelf_core::{Point, Quad};
+
+    fn quad(points: [(f64, f64); 4]) -> Quad {
+        let p = points.map(|(x, y)| Point { x, y });
+        Quad { top_left: p[0], top_right: p[1], bottom_right: p[2], bottom_left: p[3] }
+    }
+
+    fn good() -> Quad {
+        quad([(0.07, 0.25), (0.88, 0.27), (0.87, 0.70), (0.03, 0.68)])
+    }
+
+    /// 2026-11-08 로보월드_3 8번: 위쪽 두 꼭짓점이 접힌 선에 겹친 삼각형
+    fn triangle() -> Quad {
+        quad([(0.444, 0.164), (0.486, 0.164), (0.924, 0.629), (0.028, 0.633)])
+    }
+
+    fn photo() -> RgbImage {
+        RgbImage::new(300, 400)
+    }
+
+    #[test]
+    fn 믿을_만한_iphone_테두리는_그대로_쓰고_다시_찾지_않는다() {
+        let chosen = choose_quad(Some(good()), &photo(), |_| panic!("다시 찾으면 안 된다"));
+        assert_eq!(chosen, (Some(good()), None));
+    }
+
+    #[test]
+    fn 찌그러진_iphone_테두리는_버리고_mac이_찾은_테두리를_쓴다() {
+        assert_eq!(choose_quad(Some(triangle()), &photo(), |_| Some(good())), (Some(good()), Some(good())));
+    }
+
+    #[test]
+    fn mac이_찾은_테두리도_믿지_못하면_사진_전체를_쓴다() {
+        assert_eq!(choose_quad(Some(triangle()), &photo(), |_| Some(triangle())), (None, None));
+        assert_eq!(choose_quad(None, &photo(), |_| None), (None, None));
     }
 }

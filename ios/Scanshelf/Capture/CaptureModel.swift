@@ -23,6 +23,8 @@ final class CaptureModel {
     private(set) var cameraError: String?
     /// 다음 촬영으로 바꿀 페이지
     var retakeTarget: UUID?
+    /// 방금 찍은 장이 앞 장을 다시 놓은 것으로 보일 때 지울지 묻는 앞 장. 잠깐 보이고 사라진다
+    private(set) var repeatOffer: UUID?
     /// 다음 촬영의 배치. 바꾸면 이 종류의 다음 새 문서도 이 배치로 시작한다
     var layout: PageLayout {
         didSet { app.settings.setLastLayout(layout, for: document.kind) }
@@ -37,6 +39,8 @@ final class CaptureModel {
     private let app: AppModel
     private let analyzer = FrameAnalyzer()
     private let wantsDistance = LockedFlag()
+    private let wantsPageDistance = LockedFlag()
+    private var repeatOfferTask: Task<Void, Never>?
     private var engine: AutoCaptureEngine
     private var running = false
     private var messageTask: Task<Void, Never>?
@@ -70,9 +74,14 @@ final class CaptureModel {
         engine.tuning = app.settings.sensitivity.tuning
         let analyzer = analyzer
         let wantsDistance = wantsDistance
+        let wantsPageDistance = wantsPageDistance
         do {
             try await source.start { [weak self] frame in
-                let analysis = analyzer.analyze(frame, wantsDistance: wantsDistance.value)
+                let analysis = analyzer.analyze(
+                    frame,
+                    wantsDistance: wantsDistance.value,
+                    wantsPageDistance: wantsPageDistance.value
+                )
                 Task { @MainActor in self?.handle(analysis) }
             }
             cameraError = nil
@@ -90,7 +99,7 @@ final class CaptureModel {
     /// 화면 셔터, 볼륨 버튼, 블루투스 리모컨
     func shutter() {
         guard !isSaving else { return }
-        engine.manualCaptureStarted()
+        engine.manualCaptureStarted(quad: quad)
         Task { await capture() }
     }
 
@@ -107,6 +116,23 @@ final class CaptureModel {
         } catch {
             show("지우지 못했습니다: \(error.localizedDescription)")
         }
+    }
+
+    /// 다시 놓은 것으로 보인 앞 장을 지운다. 방금 찍은 장이 그 자리를 잇는다
+    func deleteRepeatedPage() {
+        guard let pageID = repeatOffer else { return }
+        dismissRepeatOffer()
+        do {
+            document = try app.deletePage(pageID, from: document)
+            show("앞 장을 지웠습니다")
+        } catch {
+            show("지우지 못했습니다: \(error.localizedDescription)")
+        }
+    }
+
+    func dismissRepeatOffer() {
+        repeatOfferTask?.cancel()
+        repeatOffer = nil
     }
 
     func retake(_ pageID: UUID) {
@@ -127,9 +153,12 @@ final class CaptureModel {
         let decision = engine.process(analysis.measurement)
         status = engine.status
         wantsDistance.value = engine.wantsDistance
+        wantsPageDistance.value = engine.wantsPageDistance
         switch decision {
         case .capture:
             Task { await capture() }
+        case .captureRepeat:
+            Task { await capture(repeating: document.pages.last?.id) }
         case .skippedDuplicate:
             show("방금 찍은 장과 같아 건너뜁니다")
         case .none:
@@ -137,8 +166,10 @@ final class CaptureModel {
         }
     }
 
-    private func capture() async {
+    /// `repeating`: 방금 찍는 장이 다시 놓은 것으로 보이는 앞 장. 찍은 뒤 지울지 묻는다
+    private func capture(repeating previous: UUID? = nil) async {
         guard !isSaving else { return }
+        dismissRepeatOffer()
         isSaving = true
         defer { isSaving = false }
         let previewQuad = quad
@@ -155,8 +186,11 @@ final class CaptureModel {
             let target = retakeTarget.flatMap { id in current.pages.contains { $0.id == id } ? id : nil }
             let updated = try await Task.detached(priority: .userInitiated) {
                 // 사진에서 다시 찾은 테두리가 더 정확하다. 못 찾으면 미리보기 테두리를 쓴다(같은 화각, 같은 방향)
-                // 시뮬레이터 합성 화면은 미리보기 테두리가 정답이다
-                let quad = trustPreview ? previewQuad : FrameAnalyzer.detectQuad(inPhoto: photo.data) ?? previewQuad
+                // 시뮬레이터 합성 화면은 미리보기 테두리가 정답이다.
+                // 둘 다 믿을 만한 사각형이 아니면 비워 둔다. Mac이 원본 해상도에서 다시 찾는다(docs/capture.md)
+                let photoQuad = FrameAnalyzer.detectQuad(inPhoto: photo.data).flatMap { QuadGeometry.isPlausible($0) ? $0 : nil }
+                let fallback = previewQuad.flatMap { QuadGeometry.isPlausible($0) ? $0 : nil }
+                let quad = trustPreview ? previewQuad : photoQuad ?? fallback
                 return try store.addPage(
                     to: current,
                     photo: photo.data,
@@ -168,6 +202,10 @@ final class CaptureModel {
             }.value
             document = updated
             app.replace(updated)
+            if target == nil, let previous, previous != updated.pages.last?.id,
+               updated.pages.contains(where: { $0.id == previous }) {
+                offerRepeat(previous)
+            }
             retakeTarget = nil
             engine.captureFinished(succeeded: true)
             flashCount += 1
@@ -178,6 +216,17 @@ final class CaptureModel {
             show(error.localizedDescription)
         }
         status = engine.status
+    }
+
+    /// 지울지 묻는 버튼은 다음 장을 놓을 시간 동안만 둔다
+    private func offerRepeat(_ pageID: UUID) {
+        repeatOffer = pageID
+        repeatOfferTask?.cancel()
+        repeatOfferTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            self?.repeatOffer = nil
+        }
     }
 
     private func show(_ text: String) {
