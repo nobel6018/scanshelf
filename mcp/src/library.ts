@@ -10,7 +10,7 @@ import { isAbsolute, join, normalize as normalizePath, sep } from "node:path";
 /** scanshelf-core SCHEMA_VERSION. 이보다 큰 manifest는 읽지 않는다(앱과 같은 규칙) */
 export const SCHEMA_VERSION = 1;
 /** scanshelf-core processing.rs PIPELINE_VERSION. 이보다 낮은 출력은 다시 처리할 대상이다. 테스트가 Rust 값과 맞는지 본다 */
-export const PIPELINE_VERSION = 6;
+export const PIPELINE_VERSION = 7;
 
 /** Mac 앱 데이터 폴더(Tauri app_data_dir) 아래 library/. SCANSHELF_LIBRARY_DIR로 바꿀 수 있다 */
 export function defaultLibraryDir(): string {

@@ -15,7 +15,9 @@ pub const PROCESSING_FILE: &str = "processing.json";
 /// 처리 알고리즘이 바뀌면 올린다. 이보다 낮은 결과는 다시 처리 대상으로 표시한다
 /// 5(2026-11-08): 사진 페이지 필터, 회전 다시 확인, 그림자 없는 펼침 나누기
 /// 6(2026-11-08): 곡면 보정이 잘라 낸 페이지 둘레를 자르지 않음
-pub const PIPELINE_VERSION: u32 = 6;
+/// 7(2026-11-09): 3단 접지 나누기(면 폭이 고르지 않으면 삼분점 근처 다시 찾기, 약한 선 받기), 잘린 글자와 못 나눈 접지 확인 표시,
+///   반쪽 표지 한 장으로, 누운 접지 눕히기. 기존 장에도 확인 표시를 붙이려고 올린다
+pub const PIPELINE_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

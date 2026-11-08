@@ -53,6 +53,7 @@ const CHECK_TEXT: Record<PageCheck, { text: string; review: boolean }> = {
   splitAtSeam: { text: "그림자가 없어 가운데 이음매에서 나눔", review: false },
   rotationDoubtful: { text: "글자 방향이 애매해 돌리지 않음. 거꾸로면 돌리기", review: true },
   photoPage: { text: "사진 페이지라 선명하게 대신 밝기만 맞춤", review: false },
+  textAtCut: { text: "나눈 경계에 글자가 걸침. 잘렸으면 배치를 바꾸거나 AI(MCP)로 접힌 선 고치기", review: true },
 };
 
 /** 썸네일 줄 하나. 출력 페이지가 없으면(처리 전) 원본 페이지 자리를 둔다 */

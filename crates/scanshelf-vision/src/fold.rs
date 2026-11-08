@@ -36,6 +36,16 @@ const BANDS: usize = 4;
 /// 접힌 선을 찾는 구간(폭 대비). 첫 선은 1/3, 둘째 선은 2/3 근처
 const LEFT_RANGE: (f32, f32) = (0.2, 0.47);
 const RIGHT_RANGE: (f32, f32) = (0.53, 0.8);
+/// 3단 접지 면은 거의 같은 폭이다(안으로 접히는 면만 2~3mm 좁다). 면 폭이 모두 이 안이면 고르다고 본다
+const REGULAR_WIDTH: (f32, f32) = (0.28, 0.38);
+/// 넓게 찾은 선으로 면 폭이 고르지 않으면 1/3, 2/3 근처만 다시 찾는다.
+/// 2026-11-08 로보월드_6 RBY 바깥 면: 오른쪽 선을 엉뚱한 곳에서 찾아 표지 면이 21%로 좁아졌다
+const NARROW_LEFT: (f32, f32) = (0.28, 0.39);
+const NARROW_RIGHT: (f32, f32) = (0.61, 0.72);
+/// 한 선이 이만큼 확실하고 면 폭이 고르면, 다른 선은 이 정도만 돼도 받는다.
+/// 2026-11-08 로보월드_6 RBM 안쪽: 빛 반사로 오른쪽 선 신뢰도가 0.28이었지만 제자리였다
+const STRONG_FOLD: f32 = 0.9;
+const WEAK_FOLD_WITH_REGULAR: f32 = 0.2;
 /// 펼친 책의 접힌 선을 찾는 구간
 pub(crate) const CENTER_RANGE: (f32, f32) = (0.35, 0.65);
 /// 이보다 약하면 접은 자국으로 보지 않는다(종이 밝기 대비)
@@ -107,9 +117,6 @@ pub fn find_folds(img: &RgbImage) -> Folds {
     };
     let profiles: Vec<TiltProfile> = tilts.par_iter().map(|&deg| tilt_profile(&g, deg, paper)).collect();
 
-    let left = best_fold(&profiles, w, LEFT_RANGE, 1.0 / 3.0);
-    let right = best_fold(&profiles, w, RIGHT_RANGE, 2.0 / 3.0);
-
     let scale_x = img.width() as f32 / w as f32;
     let to_fold = |c: FoldCandidate| {
         let tan = c.deg.to_radians().tan();
@@ -123,15 +130,31 @@ pub fn find_folds(img: &RgbImage) -> Folds {
             blank_width: c.blank_width,
         }
     };
-    let (left, right) = (to_fold(left), to_fold(right));
+    let search = |l: (f32, f32), r: (f32, f32)| {
+        let left = to_fold(best_fold(&profiles, w, l, 1.0 / 3.0));
+        let right = to_fold(best_fold(&profiles, w, r, 2.0 / 3.0));
+        let widths = Folds { left, right, confidence: 0.0 }.panel_widths(img.width());
+        (left, right, widths)
+    };
+    let regular = |widths: &[f32; 3]| widths.iter().all(|p| (REGULAR_WIDTH.0..=REGULAR_WIDTH.1).contains(p));
+    let (mut left, mut right, mut widths) = search(LEFT_RANGE, RIGHT_RANGE);
+    if !regular(&widths) {
+        let narrow = search(NARROW_LEFT, NARROW_RIGHT);
+        if regular(&narrow.2) {
+            (left, right, widths) = narrow;
+        }
+    }
 
     // 펼친 3단 접지는 가로가 길다(A4 접지 1.41). 세로로 긴 사진은 접지가 아닐 가능성이 크다
     let aspect = w as f32 / h as f32;
     let aspect_factor = ((aspect - 0.85) / 0.35).clamp(0.2, 1.0);
-    let widths = Folds { left, right, confidence: 0.0 }.panel_widths(img.width());
     let widths_ok = widths.iter().all(|&p| (0.2..=0.46).contains(&p));
     let width_factor = if widths_ok { 1.0 } else { 0.3 };
-    let confidence = left.confidence.min(right.confidence) * aspect_factor * width_factor;
+    let (strong, weak) = (left.confidence.max(right.confidence), left.confidence.min(right.confidence));
+    let mut confidence = weak * aspect_factor * width_factor;
+    if regular(&widths) && strong >= STRONG_FOLD && weak >= WEAK_FOLD_WITH_REGULAR {
+        confidence = confidence.max(MIN_FOLD_CONFIDENCE);
+    }
     Folds { left, right, confidence }
 }
 
@@ -580,6 +603,36 @@ mod tests {
         let parts = cut_at(&img, &folds);
         assert_eq!(parts.len(), 3);
         assert!(parts.iter().all(|p| p.height() == 1060));
+    }
+
+    #[test]
+    fn 한_선이_확실하고_면이_고르면_약한_선도_받는다() {
+        // 오른쪽 선은 빛 반사로 아주 약하다(밝기 차 2%)
+        let base = trifold(1500, 1060, [500.0, 1000.0], 0.0, 0.3, 1.0);
+        let img = RgbImage::from_fn(1500, 1060, |x, y| {
+            let mut p = *base.get_pixel(x, y);
+            if (995..1005).contains(&x) {
+                p = *base.get_pixel(x - 20, y);
+            }
+            if x >= 1000 {
+                p.0.iter_mut().for_each(|c| *c = (*c as f32 * 0.98) as u8);
+            }
+            p
+        });
+        let folds = find_folds(&img);
+        assert!(folds.left.confidence >= STRONG_FOLD, "{folds:?}");
+        assert!(folds.confidence >= MIN_FOLD_CONFIDENCE, "{folds:?}");
+        assert!((folds.right.center_x() - 1000.0).abs() < 20.0, "{folds:?}");
+    }
+
+    #[test]
+    fn 면_폭이_고르지_않으면_삼분점_근처를_다시_찾는다() {
+        // 진짜 접힌 선은 500, 1000. 1180에 위아래로 이어진 더 센 세로 선(그림 가장자리 같은 것)이 있다
+        let base = trifold(1500, 1060, [500.0, 1000.0], 0.0, 0.25, 1.0);
+        let img = RgbImage::from_fn(1500, 1060, |x, y| if (1178..1183).contains(&x) { Rgb([60, 60, 60]) } else { *base.get_pixel(x, y) });
+        let folds = find_folds(&img);
+        assert!((folds.right.center_x() - 1000.0).abs() < 8.0, "{folds:?}");
+        assert!(folds.panel_widths(1500).iter().all(|p| (REGULAR_WIDTH.0..=REGULAR_WIDTH.1).contains(p)));
     }
 
     #[test]

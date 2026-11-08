@@ -72,6 +72,24 @@ struct PageState {
     /// 처리하며 확인한 것(steps::PageCheck)
     #[serde(default)]
     checks: Vec<steps::PageCheck>,
+    /// 나누기 전 그림의 폭/높이(steps::Corrected::flat_aspect). 반쪽짜리 표지를 가를 때 문서 펼침과 비교한다
+    #[serde(default)]
+    flat_aspect: Option<f32>,
+}
+
+/// 앞뒤 표지 자리의 펼침 사진을 한 쪽으로 볼 폭/높이 기준. 같은 문서에서 두 쪽으로 나뉜 펼침 비율의 가운데값에
+/// steps::COVER_ASPECT_RATIO를 곱한다. 나뉜 펼침이 둘 미만이면 비교하지 않는다
+fn cover_limit(state: &PipelineState, outputs: &HashMap<Uuid, Vec<OutputPage>>, except: Uuid) -> Option<f32> {
+    let mut aspects: Vec<f32> = outputs
+        .iter()
+        .filter(|(id, parts)| **id != except && parts.iter().any(|o| o.part == PagePart::Left))
+        .filter_map(|(id, _)| state.pages.get(id)?.flat_aspect)
+        .collect();
+    if aspects.len() < 2 {
+        return None;
+    }
+    aspects.sort_by(f32::total_cmp);
+    Some(aspects[aspects.len() / 2] * steps::COVER_ASPECT_RATIO)
 }
 
 /// 페이지마다 확인 결과. 화면이 "확인 필요"를 그린다
@@ -164,6 +182,10 @@ fn mostly_spread(manifest: &Manifest) -> bool {
 fn load_state(cache: &Path, document_id: &str) -> PipelineState {
     read_json(&state_path(cache, document_id)).ok().flatten().unwrap_or_default()
 }
+
+/// 펼침, 3단 접지가 세로/가로가 이보다 크게 남으면 눕혀 본다. 2026-11-08 실제 보관함에서 세로형 표지 20장은 0.69~0.73,
+/// 누운 3단 접지(로보월드_6 RBM 바깥 면)는 0.46이었다
+const LAY_DOWN_RATIO: f32 = 1.6;
 
 /// AI가 보고 고칠 수 있게 처리 단계 중간 그림을 만든다(control.rs). 긴 변 이 값으로 줄인다
 pub const VIEW_SIDE: u32 = 2000;
@@ -503,14 +525,36 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
             let document_turn = document_rotation(&votes);
             let decided = std::cell::Cell::new(None);
             let doubtful = std::cell::Cell::new(false);
+            // 펼침, 3단 접지는 가로로 길다. 사람이 회전을 고르지 않았는데 세로로 남게 되면 눕혀서 글자가 확실히 서는 쪽을 고른다.
+            // 2026-11-08 로보월드_6 RBM 바깥 면: 방향을 확신하지 못해 세로로 누운 채 남았다
+            let lay_down = page.layout != PageLayout::Single && !edits.rotations.contains_key(&page.id);
             let detect = |image: &RgbImage| {
                 let reading = crate::ocr::detect_rotation_checked(image);
                 decided.set(reading.rotation);
                 doubtful.set(reading.doubtful);
                 // 글자 방향이 의심스러우면 문서 다수 방향도 따르지 않는다. 그 페이지 글자가 바로 섰다고 읽혔기 때문이다
-                if reading.doubtful { Some(0) } else { reading.rotation.or(document_turn) }
+                let turn = if reading.doubtful { Some(0) } else { reading.rotation.or(document_turn) };
+                let (w, h) = (image.width() as f32, image.height() as f32);
+                // 세로형 표지(0.7)는 원래 세로다. 펼친 3단 접지가 누운 정도(0.46)로 길쭉할 때만 눕혀 본다
+                let tall_after = |t: u16| if t % 180 == 0 { h > w * LAY_DOWN_RATIO } else { w > h * LAY_DOWN_RATIO };
+                if lay_down && turn.is_none_or(tall_after) {
+                    for t in [90, 270] {
+                        let check = crate::ocr::detect_rotation_checked(&crate::ocr::rotate(image, t));
+                        if check.rotation == Some(0) && !check.doubtful {
+                            decided.set(Some(t));
+                            doubtful.set(false);
+                            return Some(t);
+                        }
+                    }
+                }
+                turn
             };
             let beside = quad.is_some_and(|q| page_beside(&image, &q));
+            let cover = index == 0 || index + 1 == manifest.pages.len();
+            // 사람이 배치를 고르지 않은 앞뒤 표지 자리 펼침만 반쪽 표지인지 본다
+            let single_below = (cover && page.layout == PageLayout::Spread && !edits.layouts.contains_key(&page.id))
+                .then(|| cover_limit(&state, &outputs_by_page, page.id))
+                .flatten();
             let corrected = steps::correct_page(steps::CorrectInput {
                 image,
                 quad,
@@ -522,25 +566,32 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
                 // 사람이 배치를 고른 장은 그대로 둔다
                 auto_spread: spread_document && !edits.layouts.contains_key(&page.id),
                 hints: &edits.hints(page.id),
+                single_below,
             })?;
-            if doubtful.get() {
+            // 사람이 회전을 고른 장은 방향을 다시 묻지 않는다
+            if doubtful.get() && !edits.rotations.contains_key(&page.id) {
                 checks.push(steps::PageCheck::RotationDoubtful);
             }
-            // 펼침 배치로 찍은 앞뒤 표지는 원래 한 쪽이다. 한 쪽만 잡혔다, 나누지 못했다는 경고를 붙이지 않는다
-            let cover = index == 0 || index + 1 == manifest.pages.len();
+            // 펼침 배치로 찍은 앞뒤 표지는 원래 한 쪽이다. 한 쪽만 잡혔다, 나누지 못했다는 경고를 붙이지 않는다.
+            // 3단 접지는 표지 자리여도 세 면이라 나누지 못하면 알린다
+            let cover_skip = cover && page.layout == PageLayout::Spread;
             checks.extend(
                 corrected
                     .checks
                     .into_iter()
-                    .filter(|c| !(cover && matches!(c, steps::PageCheck::QuadOnePage | steps::PageCheck::NotSplit)))
+                    .filter(|c| !(cover_skip && matches!(c, steps::PageCheck::QuadOnePage | steps::PageCheck::NotSplit)))
                     // 옆에 다른 페이지가 안 보이면 펼침 배치로 찍은 낱장이다
                     .filter(|c| beside || *c != steps::PageCheck::QuadOnePage),
             );
             let mut page_outputs = Vec::new();
-            for (part, image) in corrected.parts {
-                page_outputs.push(write_output(ctx, &document_id, page.id, part, &image, &options, || {
-                    report(index, "ocr")
-                })?);
+            let mut cut_text = false;
+            for ((part, image), edges) in corrected.parts.into_iter().zip(&corrected.cut_edges) {
+                let (output, ocr) = write_output(ctx, &document_id, page.id, part, &image, &options, || report(index, "ocr"))?;
+                cut_text |= ocr.is_some_and(|ocr| steps::text_at_cut(&ocr, *edges));
+                page_outputs.push(output);
+            }
+            if cut_text {
+                checks.push(steps::PageCheck::TextAtCut);
             }
             let old = outputs_by_page.insert(page.id, page_outputs.clone()).unwrap_or_default();
             // 펼침 ↔ 낱장을 바꾸면 출력 id가 달라진다. 남은 옛 파일을 지운다
@@ -555,6 +606,7 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
                     rotation: decided.get(),
                     applied_rotation: if doubtful.get() { Some(0) } else { decided.get().or(document_turn) },
                     checks,
+                    flat_aspect: Some(corrected.flat_aspect),
                 },
             );
             write_json(&state_path(ctx.cache, &document_id), &state)?;
@@ -562,19 +614,33 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
         }
 
         let votes: Vec<u16> = manifest.pages.iter().filter_map(|p| state.pages.get(&p.id)?.rotation).collect();
-        let Some(turn) = document_rotation(&votes) else {
-            break;
-        };
-        redo = manifest
-            .pages
-            .iter()
-            .filter(|p| {
-                state.pages.get(&p.id).is_some_and(|s| {
-                    s.rotation.is_none() && s.applied_rotation != Some(turn) && !s.checks.contains(&steps::PageCheck::RotationDoubtful)
+        redo = match document_rotation(&votes) {
+            Some(turn) => manifest
+                .pages
+                .iter()
+                .filter(|p| {
+                    state.pages.get(&p.id).is_some_and(|s| {
+                        s.rotation.is_none() && s.applied_rotation != Some(turn) && !s.checks.contains(&steps::PageCheck::RotationDoubtful)
+                    })
                 })
-            })
-            .map(|p| p.id)
-            .collect();
+                .map(|p| p.id)
+                .collect(),
+            None => Vec::new(),
+        };
+        // 처음 처리할 때는 표지를 다른 펼침보다 먼저 처리해 비교할 값이 없다. 다 처리한 뒤 반쪽짜리 표지를 다시 한다
+        let last = manifest.pages.len().saturating_sub(1);
+        for (index, page) in manifest.pages.iter().enumerate() {
+            let candidate = (index == 0 || index == last) && page.layout == PageLayout::Spread && !edits.layouts.contains_key(&page.id);
+            let split = outputs_by_page.get(&page.id).is_some_and(|o| o.iter().any(|o| o.part == PagePart::Left));
+            let aspect = state.pages.get(&page.id).and_then(|s| s.flat_aspect);
+            let narrow = match (aspect, cover_limit(&state, &outputs_by_page, page.id)) {
+                (Some(a), Some(limit)) => a < limit,
+                _ => false,
+            };
+            if candidate && split && narrow && !redo.contains(&page.id) {
+                redo.push(page.id);
+            }
+        }
         if pass == 1 || redo.is_empty() {
             break;
         }
@@ -603,7 +669,7 @@ fn write_output(
     image: &RgbImage,
     options: &ProcessOptions,
     on_ocr: impl Fn(),
-) -> Result<OutputPage, String> {
+) -> Result<(OutputPage, Option<scanshelf_core::ocr::OcrPage>), String> {
     let id = part.output_id(source);
     let image_rel = format!("pages/{id}.jpg");
     write_jpeg(&ctx.dir.join(&image_rel), image, JPEG_QUALITY)?;
@@ -613,17 +679,17 @@ fn write_output(
     on_ocr();
     // 글자 인식이 실패해도 페이지 이미지는 남긴다. ocr이 없으면 화면이 "글자 없음"으로 보여 준다
     let ocr_rel = format!("ocr/{id}.json");
-    let ocr = match crate::ocr::recognize(image) {
+    let (ocr, page) = match crate::ocr::recognize(image) {
         Ok(page) => {
             write_json(&ctx.dir.join(&ocr_rel), &page)?;
-            Some(ocr_rel)
+            (Some(ocr_rel), Some(page))
         }
         Err(error) => {
             eprintln!("OCR 실패 ({id}): {error}");
-            None
+            (None, None)
         }
     };
-    Ok(OutputPage {
+    let output = OutputPage {
         id,
         source_page: source,
         part,
@@ -632,7 +698,8 @@ fn write_output(
         options: *options,
         pipeline_version: PIPELINE_VERSION,
         processed_at: Utc::now(),
-    })
+    };
+    Ok((output, page))
 }
 
 fn remove_output_files(dir: &Path, cache: &Path, document_id: &str, output: &OutputPage) {

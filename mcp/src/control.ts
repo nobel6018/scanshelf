@@ -13,7 +13,7 @@ export function controlFilePath(libraryDir: string): string {
 }
 
 /** pipeline/steps.rs PageCheck 중 사람이 볼 것 */
-export type ReviewCheck = "quadMissing" | "quadOnePage" | "notSplit" | "rotationDoubtful";
+export type ReviewCheck = "quadMissing" | "quadOnePage" | "notSplit" | "rotationDoubtful" | "textAtCut";
 
 export interface ReviewDocument {
   documentId: string;

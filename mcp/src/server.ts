@@ -183,8 +183,9 @@ function outputNumbers(d: Doc, sourcePage: string): number[] {
 const REVIEW_TEXT: Record<ReviewCheck, string> = {
   quadMissing: "종이 테두리를 못 찾아 사진 전체를 씀. 책상이 보이면 get_page_view(raw)를 보고 set_page_quad",
   quadOnePage: "펼침인데 한 쪽만 잡힌 듯함. 옆 쪽이 잘렸으면 get_page_view(raw)를 보고 set_page_quad",
-  notSplit: "접힌 선을 못 찾아 한 장으로 둠. 한 장짜리면 확인함, 붙어 있으면 get_page_view(flat)를 보고 set_page_folds(한 장짜리 배치가 틀렸으면 set_page_layout)",
+  notSplit: "접힌 선을 못 찾아 한 장으로 둠. 낱장이면 set_page_layout(single), 이어진 그림 때문에 통째로 두는 게 나으면 확인함, 나눠야 하면 get_page_view(flat)를 보고 set_page_folds",
   rotationDoubtful: "글자 방향이 애매해 돌리지 않음. 거꾸로거나 누웠으면 rotate_page",
+  textAtCut: "나눈 경계(접힌 선 쪽)에 글자 줄이 걸침. 옆 쪽과 함께 get_page_image로 보고 잘렸으면 get_page_view(flat)를 보고 set_page_folds",
 };
 
 type Resolved = { doc: Doc } | { error: ReturnType<typeof fail> };

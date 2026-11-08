@@ -101,7 +101,8 @@ export type PageCheck =
   | "notSplit"
   | "splitAtSeam"
   | "rotationDoubtful"
-  | "photoPage";
+  | "photoPage"
+  | "textAtCut";
 
 export interface DocumentDetail {
   summary: DocumentSummary;

@@ -41,18 +41,43 @@ pub enum PageCheck {
     RotationDoubtful,
     /// 종이 바탕이 거의 없는 사진 페이지라 선명하게 대신 전체 밝기만 맞췄다
     PhotoPage,
+    /// 나눈 면의 안쪽 경계(접힌 선 쪽)에 글자 줄이 걸쳤다. 접힌 선을 잘못 잡아 글자가 잘렸을 수 있다
+    TextAtCut,
 }
 
 impl PageCheck {
     /// 사람이 봐야 하는지. 아니면 자동으로 처리한 기록이다
     pub fn needs_review(self) -> bool {
-        matches!(self, Self::QuadMissing | Self::QuadOnePage | Self::NotSplit | Self::RotationDoubtful)
+        matches!(self, Self::QuadMissing | Self::QuadOnePage | Self::NotSplit | Self::RotationDoubtful | Self::TextAtCut)
     }
 }
 
 pub struct Corrected {
     pub parts: Vec<(PagePart, RgbImage)>,
+    /// parts와 같은 순서. 면마다 [왼쪽, 오른쪽] 가장자리가 나눈 경계(접힌 선)인지. 사진 테두리면 false
+    pub cut_edges: Vec<[bool; 2]>,
     pub checks: Vec<PageCheck>,
+    /// 원근 보정과 회전 뒤, 나누기 전 그림의 폭/높이. 같은 문서의 펼침과 비교해 반쪽짜리 표지를 가른다
+    pub flat_aspect: f32,
+}
+
+/// 앞뒤 표지 자리의 펼침 사진이 같은 문서 펼침 비율(가운데값)의 이 배보다 좁으면 한 쪽으로 본다.
+/// 2026-11-08 데이터센터 박람회_9: 가로형 책자의 펼침은 2.84인데 표지는 1.41(절반)이라 반으로 잘렸다
+pub const COVER_ASPECT_RATIO: f32 = 0.7;
+/// 경계에서 이 폭(면 폭 대비) 안에 글자 줄이 닿으면 걸쳤다고 본다
+const CUT_TEXT_MARGIN: f64 = 0.012;
+/// 글자 줄로 칠 최소 신뢰도와 글자 수. 접힌 자국을 글자로 잘못 읽은 것은 뺀다
+const CUT_TEXT_MIN_CONFIDENCE: f32 = 0.5;
+const CUT_TEXT_MIN_CHARS: usize = 2;
+
+/// 나눈 면의 OCR에서 안쪽 경계에 걸친 글자 줄이 있는지. edges는 [왼쪽, 오른쪽]이 나눈 경계인지
+pub fn text_at_cut(page: &scanshelf_core::ocr::OcrPage, edges: [bool; 2]) -> bool {
+    page.blocks.iter().flat_map(|b| &b.lines).any(|line| {
+        let long_enough = line.text.chars().filter(|c| !c.is_whitespace()).count() >= CUT_TEXT_MIN_CHARS;
+        let touches_left = edges[0] && line.bbox.x <= CUT_TEXT_MARGIN;
+        let touches_right = edges[1] && line.bbox.x + line.bbox.width >= 1.0 - CUT_TEXT_MARGIN;
+        long_enough && line.confidence >= CUT_TEXT_MIN_CONFIDENCE && (touches_left || touches_right)
+    })
 }
 
 /// 펼침을 편 결과가 이보다 세로로 길면(폭/높이) 한 쪽만 잡혔다고 본다. A4 펼침은 1.41, 한 쪽은 0.71
@@ -72,6 +97,8 @@ pub struct CorrectInput<'a> {
     pub auto_spread: bool,
     /// 사람이나 AI가 고른 접힌 선과 면 순서(edits.json). 비어 있으면 자동
     pub hints: &'a scanshelf_core::overrides::PageHints,
+    /// 펼침인데 나누기 전 폭/높이가 이보다 작으면 한 쪽으로 둔다(앞뒤 표지 자리만, pipeline이 정한다)
+    pub single_below: Option<f32>,
 }
 
 /// 글자로 방향을 정하지 못한 펼침, 접지는 가로로 긴 쪽이 맞으므로 세로로 서 있으면 눕힌다
@@ -119,7 +146,11 @@ pub fn correct_page(input: CorrectInput<'_>) -> Result<Corrected, String> {
     let flat = rotate_step(flat, input.layout, input.detect_rotation, input.extra_rotation);
     let flat = if input.options.remove_fingers { remove_fingers_step(flat, models)? } else { flat };
     let mut outputs = Vec::new();
-    let layout = effective_layout(&flat, input.layout, input.auto_spread);
+    let flat_aspect = flat.width() as f32 / flat.height().max(1) as f32;
+    let layout = match effective_layout(&flat, input.layout, input.auto_spread) {
+        PageLayout::Spread if input.single_below.is_some_and(|limit| flat_aspect < limit) => PageLayout::Single,
+        layout => layout,
+    };
     if layout == PageLayout::Spread && input.quad.is_some() && (flat.width() as f32) < flat.height() as f32 * SPREAD_MIN_ASPECT {
         checks.push(PageCheck::QuadOnePage);
     }
@@ -127,7 +158,9 @@ pub fn correct_page(input: CorrectInput<'_>) -> Result<Corrected, String> {
         Some(parts) => (parts, None),
         None => split_step_checked(flat, layout),
     };
-    let parts = order_panels(parts, &input.hints.panel_order);
+    let physical = cut_edges(parts.len());
+    let (parts, order) = order_panels(parts, &input.hints.panel_order);
+    let cut_edges = order.iter().map(|&i| physical[i]).collect();
     checks.extend(split_check);
     for (part, image) in parts {
         let image = dewarp_step(image, input.options.dewarp, framing, models)?;
@@ -145,7 +178,12 @@ pub fn correct_page(input: CorrectInput<'_>) -> Result<Corrected, String> {
         let image = filter_step(image, input.options.filter);
         outputs.push((part, image));
     }
-    Ok(Corrected { parts: outputs, checks })
+    Ok(Corrected { parts: outputs, cut_edges, checks, flat_aspect })
+}
+
+/// 왼쪽부터 놓인 면 n개의 [왼쪽, 오른쪽] 가장자리 중 나눈 경계인 것. 맨 바깥 두 가장자리만 사진 테두리다
+fn cut_edges(n: usize) -> Vec<[bool; 2]> {
+    (0..n).map(|i| [i > 0, i + 1 < n]).collect()
 }
 
 /// 손으로 고른 접힌 선으로 나눈다. 배치와 선 수가 맞지 않으면 None(자동으로 찾는다).
@@ -175,22 +213,30 @@ fn manual_split(image: &RgbImage, layout: PageLayout, folds: &[f32], exact: bool
     })
 }
 
-/// 3단 접지 면을 정한 순서로 다시 센다. order[i]번째(왼쪽부터) 면이 문서에서 i번째가 된다. 순열이 아니면 그대로
-pub fn order_panels(parts: Vec<(PagePart, RgbImage)>, order: &[u8]) -> Vec<(PagePart, RgbImage)> {
+/// 3단 접지 면을 정한 순서로 다시 센다. order[i]번째(왼쪽부터) 면이 문서에서 i번째가 된다. 순열이 아니면 그대로.
+/// 돌려주는 두 번째 값은 새 순서마다 원래(왼쪽부터) 몇 번째 면이었는지
+pub fn order_panels(parts: Vec<(PagePart, RgbImage)>, order: &[u8]) -> (Vec<(PagePart, RgbImage)>, Vec<usize>) {
     let n = parts.len();
     let is_permutation = order.len() == n && (0..n as u8).all(|i| order.contains(&i));
     if n < 2 || !is_permutation || !parts.iter().all(|(p, _)| matches!(p, PagePart::Panel(_))) {
-        return parts;
+        return (parts, (0..n).collect());
     }
     let mut slots: Vec<Option<RgbImage>> = parts.into_iter().map(|(_, image)| Some(image)).collect();
-    (0u8..)
+    let ordered = (0u8..)
         .zip(order)
         .map(|(i, &from)| (PagePart::Panel(i), slots[from as usize].take().expect("순열이라 한 번씩만 꺼낸다")))
-        .collect()
+        .collect();
+    (ordered, order.iter().map(|&i| i as usize).collect())
 }
 
 /// 나누기와 그 확인. 사람이 한 쪽으로 둔 장(QuadOnePage가 아닌 한 쪽 표지 등)은 나누지 못해도 확인 대상이 아니다
 fn split_step_checked(image: RgbImage, layout: PageLayout) -> (Vec<(PagePart, RgbImage)>, Option<PageCheck>) {
+    if layout == PageLayout::Trifold {
+        // 3단 접지로 정했는데 나누지 못했으면 알린다. 2026-11-08까지는 조용히 한 장으로 남아 아무도 몰랐다
+        let parts = split_step(image, layout);
+        let check = (parts.len() == 1).then_some(PageCheck::NotSplit);
+        return (parts, check);
+    }
     if layout != PageLayout::Spread {
         return (split_step(image, layout), None);
     }
@@ -319,6 +365,7 @@ mod tests {
             extra_rotation: 0,
             auto_spread: false,
             hints: &Default::default(),
+            single_below: None,
         })
         .unwrap()
         .parts
@@ -406,17 +453,18 @@ mod hint_tests {
 
     #[test]
     fn 면_순서를_바꾸면_번호를_다시_센다() {
-        let ordered = order_panels(panels(), &[2, 0, 1]);
+        let (ordered, from) = order_panels(panels(), &[2, 0, 1]);
+        assert_eq!(from, vec![2, 0, 1]);
         let widths: Vec<(PagePart, u32)> = ordered.iter().map(|(p, i)| (*p, i.width())).collect();
         assert_eq!(widths, vec![(PagePart::Panel(0), 12), (PagePart::Panel(1), 10), (PagePart::Panel(2), 11)]);
     }
 
     #[test]
     fn 순열이_아니거나_접지가_아니면_그대로() {
-        let same = order_panels(panels(), &[0, 0, 1]);
+        let (same, _) = order_panels(panels(), &[0, 0, 1]);
         assert_eq!(same.iter().map(|(_, i)| i.width()).collect::<Vec<_>>(), vec![10, 11, 12]);
         let spread = vec![(PagePart::Left, RgbImage::new(4, 4)), (PagePart::Right, RgbImage::new(5, 4))];
-        let kept = order_panels(spread, &[1, 0]);
+        let (kept, _) = order_panels(spread, &[1, 0]);
         assert_eq!(kept[0].0, PagePart::Left);
     }
 
@@ -441,5 +489,83 @@ mod hint_tests {
         });
         let exact = manual_split(&image, PageLayout::Spread, &[0.51], true).unwrap();
         assert_eq!(exact[0].1.width(), 510);
+    }
+}
+
+#[cfg(test)]
+mod check_tests {
+    use super::*;
+    use scanshelf_core::ocr::{BlockKind, OcrBlock, OcrLine, OcrPage, Rect};
+
+    fn page(lines: &[(&str, f64, f64, f32)]) -> OcrPage {
+        let lines: Vec<OcrLine> = lines
+            .iter()
+            .map(|(text, x, w, confidence)| OcrLine {
+                text: text.to_string(),
+                bbox: Rect { x: *x, y: 0.1, width: *w, height: 0.02 },
+                confidence: *confidence,
+            })
+            .collect();
+        OcrPage {
+            engine: "test".into(),
+            image_width: 100,
+            image_height: 100,
+            text: String::new(),
+            blocks: vec![OcrBlock { kind: BlockKind::Paragraph, text: String::new(), bbox: Rect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 }, lines }],
+        }
+    }
+
+    #[test]
+    fn 나눈_경계에_걸친_글자만_잡는다() {
+        // 2026-11-08 데이터센터 박람회_1: 오른쪽 면이 "현장을"의 "현"을 잃고 "장을 인식하고"로 시작했다
+        let cut_left = page(&[("장을 인식하고", 0.004, 0.5, 0.9)]);
+        assert!(text_at_cut(&cut_left, [true, false]));
+        assert!(!text_at_cut(&cut_left, [false, true]), "사진 테두리 쪽이면 잡지 않는다");
+        let cut_right = page(&[("전력 운영 현", 0.2, 0.795, 0.9)]);
+        assert!(text_at_cut(&cut_right, [false, true]));
+        let inside = page(&[("가운데 글자", 0.1, 0.8, 0.9)]);
+        assert!(!text_at_cut(&inside, [true, true]));
+        let crease = page(&[("|", 0.0, 0.01, 0.9), ("흐릿", 0.0, 0.3, 0.2)]);
+        assert!(!text_at_cut(&crease, [true, true]), "한 글자짜리, 믿기 어려운 줄은 뺀다");
+    }
+
+    #[test]
+    fn 면마다_나눈_경계() {
+        assert_eq!(cut_edges(1), vec![[false, false]]);
+        assert_eq!(cut_edges(2), vec![[false, true], [true, false]]);
+        assert_eq!(cut_edges(3), vec![[false, true], [true, true], [true, false]]);
+    }
+
+    #[test]
+    fn 나누지_못한_3단_접지는_알린다() {
+        let blank = RgbImage::from_pixel(900, 300, image::Rgb([240; 3]));
+        let (parts, check) = split_step_checked(blank.clone(), PageLayout::Trifold);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(check, Some(PageCheck::NotSplit));
+        assert_eq!(split_step_checked(blank, PageLayout::Single).1, None);
+    }
+
+    #[test]
+    fn 펼침_비율의_절반쯤인_표지는_한_쪽으로_둔다() {
+        let options = ProcessOptions { filter: Filter::Original, remove_fingers: false, dewarp: Dewarp::Off, ..ProcessOptions::default() };
+        let run = |single_below| {
+            correct_page(CorrectInput {
+                image: RgbImage::from_pixel(1400, 1000, image::Rgb([240; 3])),
+                quad: None,
+                layout: PageLayout::Spread,
+                options: &options,
+                models: &Models::none(),
+                detect_rotation: &|_| Some(0),
+                extra_rotation: 0,
+                auto_spread: false,
+                hints: &Default::default(),
+                single_below,
+            })
+            .unwrap()
+        };
+        let cover = run(Some(2.84 * COVER_ASPECT_RATIO));
+        assert_eq!(cover.parts.iter().map(|(p, _)| *p).collect::<Vec<_>>(), vec![PagePart::Whole]);
+        assert!(!cover.checks.contains(&PageCheck::NotSplit));
+        assert!((cover.flat_aspect - 1.4).abs() < 0.01);
     }
 }
