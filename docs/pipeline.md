@@ -15,7 +15,9 @@
 ## 페이지 하나의 흐름
 
 1. 원본 읽기: `CGImageSourceCreateThumbnailAtIndex`에 크기 제한 없이 `CreateThumbnailWithTransform`을 줘서 EXIF 회전을 적용합니다. image 크레이트는 HEIC를 못 읽습니다
-2. 꼭짓점: `Edits::apply(manifest)` 값(손으로 고친 값, 없으면 iPhone 감지값). 둘 다 없으면 원본 해상도에서 `VNDetectDocumentSegmentationRequest`로 다시 찾고, 못 찾으면 사진 전체를 씁니다. Mac이 찾은 꼭짓점은 캐시 상태 파일에 두고 화면에 "Mac 감지"로 보입니다
+2. 꼭짓점: `Edits::apply(manifest)` 값(손으로 고친 값, 없으면 iPhone 감지값). 둘 다 없거나 믿을 만한 사각형이 아니면 원본 해상도에서 `VNDetectDocumentSegmentationRequest`로 다시 찾고, 그것도 못 찾거나 믿을 만하지 않으면 사진 전체를 씁니다. Mac이 찾은 꼭짓점은 캐시 상태 파일에 두고 화면에 "Mac 감지"로 보입니다(`src-tauri/src/pipeline/mod.rs` `choose_quad`)
+   - 믿을 만한 사각형: 볼록하고, 마주 보는 변 길이의 비가 0.8 이상이고, 내각이 65~115도(`scanshelf_core::Quad::is_plausible`, 기준과 근거는 docs/capture.md "테두리를 믿을 수 있는가"). 2026-11-08 촬영에서 iPhone이 흰 면이나 어두운 표지 쪽 꼭짓점을 접힌 선에 붙인 삼각형을 넘겼고, 그대로 펴서 페이지가 찢긴 그림이 됐습니다(6장)
+   - 이렇게 버린 iPhone 꼭짓점으로 이미 처리한 장은 지문에 `quadRejected`가 붙어 한 번 다시 처리됩니다. 원본을 열지 않으려고 이 판단만 iPhone 사진 비율(세로 4:3)로 합니다(`fingerprint`)
 3. 보정 단계(`steps.rs`): 원근 보정 → 두 페이지 분리 → 곡면 보정 → 손가락 지우기 → 필기 지우기 → 조명과 필터
 4. `pages/<출력 id>.jpg`(품질 90, 긴 변 최대 4000픽셀)와 캐시 썸네일(너비 360)
 5. OCR(`docs/ocr.md`) → `ocr/<출력 id>.json`. 실패해도 페이지는 남기고 `ocr`을 비웁니다
