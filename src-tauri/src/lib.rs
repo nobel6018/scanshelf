@@ -4,6 +4,7 @@
 
 mod actions;
 mod ai;
+pub mod archive;
 mod ask;
 mod book;
 pub mod busy;
@@ -107,6 +108,7 @@ pub fn run() {
             transfer::cancel_pairing,
             transfer::remove_paired_device,
             inbox::icloud_inbox_status,
+            archive::document_origin,
             library::list_documents,
             library::get_document,
             library::save_edits,

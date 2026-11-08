@@ -56,6 +56,38 @@ enum SendStatus: Equatable, Sendable {
     }
 }
 
+/// iCloud 쪽 상태. Mac 쪽(SendStatus)과 따로 보여 준다. "어디에 사본이 있는가"를 장소마다 답하려는 것이다
+enum CloudStatus: Equatable, Sendable {
+    /// iCloud 폴더를 고르지 않았다
+    case off
+    /// iPhone이 inbox에 올리는 중이거나, Mac이 받은 뒤 archive에 넣는 중
+    case uploading
+    /// inbox에 올라가 Mac이 가져가기를 기다린다
+    case inInbox
+    /// Mac이 받은 원본이 archive에 다 있다. 영구 보관
+    case archived
+
+    static func resolve(
+        folderChosen: Bool,
+        hasPages: Bool,
+        fingerprint: String?,
+        record: SendRecord?,
+        backup: BackupEntry?
+    ) -> CloudStatus {
+        guard folderChosen else { return .off }
+        guard hasPages, let fingerprint else { return .off }
+        if backup?.archivedFingerprint == fingerprint { return .archived }
+        let delivered = record?.confirmed == true && record?.manifestFingerprint == fingerprint
+        if !delivered, backup?.uploadedFingerprint == fingerprint { return .inInbox }
+        return .uploading
+    }
+
+    /// 앱을 지워도 남는가
+    var isSafe: Bool {
+        self == .inInbox || self == .archived
+    }
+}
+
 /// Application Support/send-records.json. 문서 폴더 밖에 두어 iCloud나 Mac으로 섞여 가지 않는다
 struct SendRecordStore: Sendable {
     let url: URL
@@ -82,12 +114,14 @@ struct SendRecordStore: Sendable {
 
 enum RetentionPolicy {
     /// 원본을 지울 문서. Mac이 받았다고 확인됐고, 보낸 뒤 바뀌지 않았고, 보낸 지 `days`일이 지난 것.
+    /// `archived`를 주면(iCloud 폴더를 골랐으면) iCloud archive에도 지금 판이 있는 문서만 지운다. 사본이 Mac 하나뿐일 때 지우지 않는다.
     /// days가 nil이면 지우지 않는다
     static func documentsToDelete(
         records: [UUID: SendRecord],
         fingerprints: [UUID: String],
         days: Int?,
-        now: Date
+        now: Date,
+        archived: [UUID: String]? = nil
     ) -> [UUID] {
         guard let days else { return [] }
         let limit = TimeInterval(days) * 24 * 60 * 60
@@ -96,6 +130,7 @@ enum RetentionPolicy {
                   fingerprints[id] == record.manifestFingerprint,
                   now.timeIntervalSince(record.sentAt) >= limit
             else { return nil }
+            if let archived, archived[id] != record.manifestFingerprint { return nil }
             return id
         }
         .sorted { $0.uuidString < $1.uuidString }

@@ -54,7 +54,16 @@ enum ICloudBackupEngine {
         if confirmed {
             entry.macRaws.formUnion(manifest.pages.map(\.raw))
             try remove(target)
-            return BackupSyncOutcome(entry: entry.withoutCopy(), confirmedFingerprint: newlyConfirmed)
+            entry = entry.withoutCopy()
+            if entry.archivedFingerprint != fingerprint, !manifest.pages.isEmpty {
+                if isArchived(manifest: manifest, archive: ICloudFolderLayout.archive(in: root, documentID: documentID)) {
+                    entry.archivedFingerprint = fingerprint
+                    entry.archiveChecks = nil
+                } else {
+                    entry.archiveChecks = (entry.archiveChecks ?? 0) + 1
+                }
+            }
+            return BackupSyncOutcome(entry: entry, confirmedFingerprint: newlyConfirmed)
         }
         // 찍었던 장을 다 지운 문서는 Mac이 모르면 알릴 것이 없다
         if manifest.pages.isEmpty, entry.macRaws.isEmpty {
@@ -75,6 +84,22 @@ enum ICloudBackupEngine {
             entry.uploadedFingerprint = fingerprint
         }
         return BackupSyncOutcome(entry: entry, confirmedFingerprint: nil)
+    }
+
+    /// Mac이 archive에 manifest와 지금 판의 원본을 다 넣었는지. 다른 기기가 올린 파일은 iCloud 서버에 올라간 뒤에야
+    /// 이 iPhone 목록에 보이므로, 보이면 iCloud에 있는 것이다. 내용은 내려받지 않는다(원본은 이름이 페이지 id라 바뀌지 않는다)
+    static func isArchived(manifest: Manifest, archive: URL) -> Bool {
+        // 한 번도 열어 보지 않은 iCloud 폴더는 목록이 비어 보일 수 있다. 메타데이터만 읽게 조정해 목록을 채운다
+        var coordinationError: NSError?
+        NSFileCoordinator(filePresenter: nil).coordinate(
+            readingItemAt: archive,
+            options: [.immediatelyAvailableMetadataOnly],
+            error: &coordinationError
+        ) { url in
+            _ = try? FileManager.default.contentsOfDirectory(atPath: url.appending(path: DocumentStore.rawDirectory).path)
+        }
+        let files = [archive.appending(path: ManifestSchema.fileName)] + manifest.pages.map { archive.appending(path: $0.raw) }
+        return files.allSatisfy(isPresent)
     }
 
     /// 올렸는데 폴더에서 빠진 것이 있고, Mac에 있다는 확인도 없으면 시간을 두고 다시 올린다
@@ -279,11 +304,13 @@ final class ICloudBackup {
         }
     }
 
-    /// 폴더를 바꾸거나 잊었다. 복사해 둔 기록은 그 폴더 이야기라 지운다. Mac에 있다는 기록은 그대로 둔다
+    /// 폴더를 바꾸거나 잊었다. 복사해 둔 기록과 보관 확인은 그 폴더 이야기라 지운다. Mac에 있다는 기록은 그대로 둔다
     func folderChanged() {
         folderFailure = nil
         for id in state.entries.keys {
             state.entries[id] = state.entries[id]?.withoutCopy()
+            state.entries[id]?.archivedFingerprint = nil
+            state.entries[id]?.archiveChecks = nil
         }
         saveState()
         kick()
@@ -393,7 +420,11 @@ final class ICloudBackup {
             // 복사하는 사이 Wi-Fi로 받은 원본 기록을 잃지 않는다
             entry.macRaws.formUnion((state.entries[id]?.macRaws ?? []).subtracting(before.macRaws))
             state.entries[id] = entry
-            notBefore[id] = now.addingTimeInterval(BackupQueue.watchInterval)
+            // Mac이 받았는데 archive가 아직이면 간격을 늘려 가며 본다. Mac이 옛 버전이면 영영 안 생기므로 계속 20초로 보지 않는다
+            let waitingArchive = confirmed != nil && confirmed == wanted && entry.archivedFingerprint != wanted
+            notBefore[id] = now.addingTimeInterval(
+                waitingArchive ? BackupQueue.archiveCheckDelay(checks: max((entry.archiveChecks ?? 0) - 1, 0)) : BackupQueue.watchInterval
+            )
             if let fingerprint = outcome.confirmedFingerprint {
                 host.backupConfirmed(id, fingerprint: fingerprint)
             }

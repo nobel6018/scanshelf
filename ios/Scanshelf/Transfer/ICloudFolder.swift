@@ -23,6 +23,8 @@ enum ICloudFolderLayout {
     static let rootName = "scanshelf"
     static let inboxName = "inbox"
     static let receivedName = "received"
+    /// Mac이 받은 원본을 영구 보관하는 곳. Mac만 쓴다(src-tauri/src/archive.rs)
+    static let archiveName = "archive"
     private static let iCloudDriveName = "com~apple~CloudDocs"
 
     /// 고른 폴더에서 scanshelf 루트를 찾는다. scanshelf 안의 inbox나 문서 폴더를 고르는 실수를 받아 주려고 위로 올라가며 찾는다.
@@ -47,6 +49,11 @@ enum ICloudFolderLayout {
     }
 
     /// Mac이 받은 것을 적어 두는 파일
+    static func archive(in root: URL, documentID: UUID) -> URL {
+        root.appending(path: archiveName, directoryHint: .isDirectory)
+            .appending(path: documentID.uuidString.lowercased(), directoryHint: .isDirectory)
+    }
+
     static func receipt(in root: URL, documentID: UUID) -> URL {
         root.appending(path: receivedName, directoryHint: .isDirectory)
             .appending(path: "\(documentID.uuidString.lowercased()).json")

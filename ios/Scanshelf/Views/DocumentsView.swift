@@ -8,6 +8,7 @@ struct DocumentsView: View {
     @State private var showingNew = false
     @State private var capturing: CaptureRequest?
     @State private var showingSettings = false
+    @State private var showingStorage = false
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -29,7 +30,7 @@ struct DocumentsView: View {
                 Section(session.isEmpty ? "묶지 않은 문서" : session) {
                     ForEach(app.documents.filter { ($0.session ?? "") == session }) { manifest in
                         NavigationLink(value: manifest.id) {
-                            DocumentRow(manifest: manifest, status: app.status(of: manifest))
+                            DocumentRow(manifest: manifest, status: app.status(of: manifest), cloud: app.cloudStatus(of: manifest))
                         }
                     }
                     .onDelete { offsets in
@@ -60,10 +61,9 @@ struct DocumentsView: View {
                     .accessibilityIdentifier("settings")
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button("모두 보내기", systemImage: "paperplane") {
-                    Task { await app.sendPending() }
-                }
-                .disabled(app.settings.pairedMac == nil && !app.iCloud.isChosen)
+                // 보내기는 앱을 열 때와 촬영을 마칠 때 저절로 한다. 버튼은 어디에 무엇이 있는지 보여 주는 화면을 연다
+                Button("보관 현황", systemImage: "externaldrive.badge.icloud") { showingStorage = true }
+                    .accessibilityIdentifier("storage")
             }
         }
         // 목록을 내려도 가려지지 않게 목록 밖에 둔다
@@ -93,6 +93,9 @@ struct DocumentsView: View {
         }
         .sheet(isPresented: $showingSettings) {
             NavigationStack { SettingsView() }
+        }
+        .sheet(isPresented: $showingStorage) {
+            NavigationStack { StorageOverviewView() }
         }
         .fullScreenCover(item: $capturing) { request in
             CaptureView(document: request.manifest, layout: request.layout, app: app)
@@ -148,6 +151,7 @@ struct DocumentsView: View {
             capturing = manifest.map { CaptureRequest(manifest: $0) }
         case "new": showingNew = true
         case "settings": showingSettings = true
+        case "storage": showingStorage = true
         case "scan":
             // "스캔 시작" 동작과 같은 길. `-scanshelfScanKind book` 으로 종류를 줄 수 있다
             let kind = UserDefaults.standard.string(forKey: "scanshelfScanKind").flatMap(DocumentKind.init(rawValue:))
@@ -178,6 +182,7 @@ struct DocumentsView: View {
 struct DocumentRow: View {
     let manifest: Manifest
     let status: SendStatus
+    let cloud: CloudStatus
 
     var body: some View {
         HStack(spacing: 12) {
@@ -188,36 +193,61 @@ struct DocumentRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            SendStatusBadge(status: status)
+            StorageBadges(mac: status, cloud: cloud)
         }
         .padding(.vertical, 2)
     }
 }
 
-struct SendStatusBadge: View {
-    let status: SendStatus
+/// 사본이 있는 곳을 장소마다 하나씩 보여 준다: Mac, iCloud. 둘 다 없으면 "iPhone에만".
+/// 예전에는 한 칸에 "iCloud에 있음"과 "Mac에 있음" 중 하나만 보여서, Mac에 간 문서가 iCloud에도 있는지 알 수 없었다
+struct StorageBadges: View {
+    let mac: SendStatus
+    let cloud: CloudStatus
 
     var body: some View {
-        switch status {
-        case .notSent:
-            Label("이 iPhone에만", systemImage: "iphone").labelStyle(.badge).foregroundStyle(.orange)
-        case let .sending(progress):
-            ProgressView(value: progress).frame(width: 60)
-        case .backupPending:
-            Label("iCloud 백업 대기", systemImage: "icloud.and.arrow.up").labelStyle(.badge).foregroundStyle(.orange)
-        case .awaitingMac:
-            Label("iCloud에 있음", systemImage: "checkmark.icloud").labelStyle(.badge).foregroundStyle(.blue)
+        let macChip = macChip
+        let cloudChip = cloudChip
+        HStack(spacing: 10) {
+            if macChip == nil, cloudChip == nil {
+                Label("iPhone에만", systemImage: "iphone").labelStyle(.badge).foregroundStyle(.orange)
+            }
+            if let macChip { macChip }
+            if let cloudChip { cloudChip }
+        }
+    }
+
+    private var macChip: AnyView? {
+        switch mac {
         case .sent:
-            Label("Mac에 있음", systemImage: "checkmark.circle.fill").labelStyle(.badge).foregroundStyle(.green)
+            AnyView(Label("Mac", systemImage: "checkmark.circle.fill").labelStyle(.badge).foregroundStyle(.green))
+        case let .sending(progress):
+            AnyView(HStack(spacing: 4) {
+                ProgressView(value: progress).frame(width: 36)
+                Text("Mac").font(.caption.weight(.medium))
+            }.foregroundStyle(.green))
         case .changedSinceSent:
-            Label("바뀜", systemImage: "arrow.triangle.2.circlepath").labelStyle(.badge).foregroundStyle(.orange)
+            AnyView(Label("Mac", systemImage: "arrow.triangle.2.circlepath").labelStyle(.badge).foregroundStyle(.orange))
         case .failed:
-            Label("실패", systemImage: "exclamationmark.triangle.fill").labelStyle(.badge).foregroundStyle(.red)
+            AnyView(Label("Mac", systemImage: "exclamationmark.triangle.fill").labelStyle(.badge).foregroundStyle(.red))
+        case .notSent, .backupPending, .awaitingMac:
+            nil
+        }
+    }
+
+    private var cloudChip: AnyView? {
+        switch cloud {
+        case .archived, .inInbox:
+            AnyView(Label("iCloud", systemImage: "checkmark.icloud").labelStyle(.badge).foregroundStyle(.blue))
+        case .uploading:
+            AnyView(Label("iCloud", systemImage: "icloud.and.arrow.up").labelStyle(.badge).foregroundStyle(.orange))
+        case .off:
+            nil
         }
     }
 }
 
-private struct BadgeLabelStyle: LabelStyle {
+struct BadgeLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
         HStack(spacing: 4) {
             configuration.icon
@@ -228,7 +258,7 @@ private struct BadgeLabelStyle: LabelStyle {
 }
 
 extension LabelStyle where Self == BadgeLabelStyle {
-    fileprivate static var badge: BadgeLabelStyle { BadgeLabelStyle() }
+    static var badge: BadgeLabelStyle { BadgeLabelStyle() }
 }
 
 /// 새 버전 알림. AltStore에서 업데이트하고, 닫으면 그 버전은 다시 알리지 않는다

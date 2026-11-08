@@ -362,6 +362,10 @@ async fn put_manifest(State(service): Shared, Path(id): Path<String>, request: R
     .await??;
     service.uploads.finish(id);
     eprintln!("문서 받음 (Wi-Fi): {} (새 원본 {}개)", outcome.document_id, outcome.added_raw.len());
+    if !outcome.stale {
+        // iCloud 보관(archive)은 inbox 감시가 1분 안에 보관함에서 복사한다. 응답을 늦추지 않는다
+        crate::archive::record_arrival(&service.store.document_dir(id), crate::archive::Route::Wifi, outcome.added_raw.len());
+    }
     service.events.library_changed(outcome.document_id);
     Ok(Json(json!({
         "documentId": outcome.document_id,

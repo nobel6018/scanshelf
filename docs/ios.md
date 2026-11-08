@@ -152,6 +152,7 @@ iOS는 앱을 지우면 앱의 파일을 전부 지웁니다. 그래서 찍은 �
 xcrun simctl launch <udid> com.nobel6018.scanshelf -scanshelfScreen capture   # 촬영(세션 "2026 예시박람회" 문서를 만든다)
 xcrun simctl launch <udid> com.nobel6018.scanshelf -scanshelfScreen new       # 새 문서
 xcrun simctl launch <udid> com.nobel6018.scanshelf -scanshelfScreen settings  # 설정
+xcrun simctl launch <udid> com.nobel6018.scanshelf -scanshelfScreen storage   # 보관 현황
 xcrun simctl launch <udid> com.nobel6018.scanshelf -scanshelfScreen scan -scanshelfScanKind book  # "스캔 시작" 동작과 같은 길
 xcrun simctl launch <udid> com.nobel6018.scanshelf -scanshelfScreen update    # 가짜 새 버전 알림(9.9.9)
 xcrun simctl io <udid> screenshot --display=1 shot.png

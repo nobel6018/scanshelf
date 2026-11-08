@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { OriginPanel } from "./OriginPanel";
 import { api, compact, fileUrl, KIND_LABEL } from "../api";
 import type {
   PagePart,
@@ -377,6 +378,7 @@ export function DocumentView({ documentId, initialOutputId, initialQuery, revisi
               }}
               onError={onError}
             />
+          <OriginPanel documentId={documentId} revision={revision} />
           <OptionsPanel options={detail.options} onChange={setOptions} onReprocess={() => api.reprocess(documentId, true).then(onChanged).catch((e) => onError(String(e)))} />
           <ExportPanel documentId={documentId} isPamphlet={summary.kind === "pamphlet"} ready={ready} onError={onError} />
           {summary.kind === "pamphlet" && (

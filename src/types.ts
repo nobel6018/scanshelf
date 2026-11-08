@@ -193,10 +193,32 @@ export interface PairingCode {
   expiresAt: string;
 }
 
+export interface PendingInboxDocument {
+  documentId: string;
+  name: string | null;
+  reason: string;
+}
+
 export interface InboxStatus {
   path: string;
   available: boolean;
   pending: number;
+  waiting: PendingInboxDocument[];
+  archivePath: string;
+  archived: number;
+  archivePending: number;
+}
+
+// 받은 경로와 iCloud 보관(src-tauri/src/archive.rs)
+export interface Arrival {
+  route: "wifi" | "icloud";
+  at: string;
+  added: number;
+}
+
+export interface DocumentOrigin {
+  arrivals: Arrival[];
+  archive: "done" | "partial" | "notApplicable";
 }
 
 // 단축키, scanshelf:// 링크, 가져오기 (src-tauri/src/actions.rs, import.rs)

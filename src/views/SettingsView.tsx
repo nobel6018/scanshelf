@@ -26,6 +26,14 @@ export function SettingsView({ update, onError }: Props) {
     api.icloudInboxStatus().then(setInbox).catch((e) => onError(String(e)));
   }, [onError]);
 
+  // iCloud 받는 중 목록은 5초마다 바뀐다(src-tauri/src/inbox.rs 훑기 간격)
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      api.icloudInboxStatus().then(setInbox).catch(() => {});
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   useEffect(() => {
     reload();
     getVersion().then(setVersion).catch(() => setVersion(""));
@@ -134,15 +142,34 @@ export function SettingsView({ update, onError }: Props) {
       </section>
 
       <section className="panel">
-        <h3>iCloud 폴더</h3>
+        <h3>iCloud</h3>
         {inbox === null && <p className="hint">iCloud 받기가 아직 연결되지 않았습니다</p>}
-        {inbox && (
+        {inbox && !inbox.available && <p>iCloud Drive를 찾지 못했습니다. 시스템 설정에서 iCloud Drive를 켜세요.</p>}
+        {inbox && inbox.available && (
           <>
-            <p>
-              {inbox.available ? "iCloud Drive를 지켜보는 중" : "iCloud Drive를 찾지 못했습니다. 시스템 설정에서 iCloud Drive를 켜세요."}
+            <p className="hint">
+              iPhone이 Mac과 떨어져 있을 때 iCloud로 올린 문서를 받고, 받은 원본은 iCloud에도 계속 보관합니다.
             </p>
+            <h4>받는 중</h4>
+            {inbox.waiting.length === 0 ? (
+              <p className="hint">기다리는 문서가 없습니다</p>
+            ) : (
+              <ul className="plain-list">
+                {inbox.waiting.map((w) => (
+                  <li key={w.documentId}>
+                    <span>{w.name ?? "이름을 아직 모르는 문서"}</span>
+                    <span className="hint">{w.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
             <p className="hint path">{inbox.path}</p>
-            {inbox.pending > 0 && <p className="hint">아직 다 받지 못한 문서 {inbox.pending}개</p>}
+            <h4>iCloud 보관</h4>
+            <p>
+              iPhone 스캔 {inbox.archived}개 보관됨
+              {inbox.archivePending > 0 && <span className="hint">, {inbox.archivePending}개 올리는 중</span>}
+            </p>
+            <p className="hint path">{inbox.archivePath}</p>
           </>
         )}
       </section>

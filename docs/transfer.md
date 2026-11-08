@@ -2,9 +2,11 @@
 
 2026-11-05 결정: 같은 Wi-Fi면 직접 보내고, 떨어져 있으면 iCloud 폴더로 보냅니다.
 
+2026-11-08 결정: Mac이 받은 원본을 iCloud `scanshelf/archive`에 영구 보관합니다(아래 "iCloud 영구 보관"). 그전에는 Mac이 가져가면 iCloud 사본을 지워, "Mac에 있음"이 된 문서는 Mac 보관함이 유일한 사본이었습니다. 사용자가 무엇이 백업됐는지 알 수 없다고 해서 바꿨습니다. 스캔 양만큼 iCloud 용량을 쓰는 것은 사용자가 받아들였습니다.
+
 2026-11-06 결정: 찍은 장은 곧바로 iCloud 폴더에도 복사합니다(아래 "iCloud 백업"). iOS는 앱을 지우면 샌드박스도 지우므로 `Documents/library`에만 있는 스캔은 앱과 함께 사라집니다. iCloud 저장 공간을 쓰는 것과 회사 자료가 iCloud를 거치는 것은 사용자가 받아들였습니다.
 
-코드: 서명 `crates/scanshelf-core/src/transfer.rs`, 예시 `fixtures/transfer-signature.json`, Mac 서버 `src-tauri/src/transfer/`, 보관함 가져오기 `src-tauri/src/store.rs`(`Store::import`), iCloud inbox `src-tauri/src/inbox.rs`(`scan_inbox`), iPhone 백업 `ios/Scanshelf/Transfer/ICloudBackup.swift`, `ios/Scanshelf/Library/BackupQueue.swift`
+코드: 영구 보관 `src-tauri/src/archive.rs`, 서명 `crates/scanshelf-core/src/transfer.rs`, 예시 `fixtures/transfer-signature.json`, Mac 서버 `src-tauri/src/transfer/`, 보관함 가져오기 `src-tauri/src/store.rs`(`Store::import`), iCloud inbox `src-tauri/src/inbox.rs`(`scan_inbox`), iPhone 백업 `ios/Scanshelf/Transfer/ICloudBackup.swift`, `ios/Scanshelf/Library/BackupQueue.swift`
 
 ## Wi-Fi 직접 전송 (기본)
 
@@ -75,7 +77,7 @@ manifest의 `revision`이 보관함 것보다 작으면 아무것도 바꾸지 �
 
 받는 동안에는 문서 단위로 busy 등록부(`src-tauri/src/busy.rs`)에 올라 앱 안 업데이트가 앱을 다시 켜지 않습니다(`transfer/sessions.rs`). 첫 원본 `PUT`에 올리고 manifest 가져오기가 끝나면 내립니다. 원본 사이 몇 초의 틈에 업데이트가 끼어들지 않게 요청 단위가 아니라 문서 단위로 잡았습니다. 요청 없이 2분이 지나면(iPhone이 Wi-Fi를 벗어남) 내립니다. 받다 만 원본은 `incoming/`에 남아 다음에 이어 보냅니다. iCloud inbox 가져오기도 문서 하나를 복사하는 동안 등록합니다.
 
-iPhone은 보내기에 성공한 문서를 "Mac에 있음"으로 표시합니다. 원본 삭제는 설정에서 고릅니다(기본: 7일 뒤 지움).
+iPhone은 보내기에 성공한 문서에 `Mac` 칩을 붙입니다. 원본 삭제는 설정에서 고릅니다(기본: 7일 뒤 지움). iCloud 폴더를 골랐으면 archive까지 확인된 뒤에만 지웁니다.
 
 ## iCloud 백업
 
@@ -83,8 +85,9 @@ iPhone은 보내기에 성공한 문서를 "Mac에 있음"으로 표시합니다
 
 ```
 iCloud Drive/scanshelf/
-  inbox/<문서 id>/manifest.json, raw/<페이지 id>.heic    iPhone이 쓰고, 가져오면 Mac이 지운다
+  inbox/<문서 id>/manifest.json, raw/<페이지 id>.heic    iPhone이 쓰고, 가져오면 Mac이 archive로 옮긴다
   received/<문서 id>.json                                Mac만 쓴다
+  archive/<문서 id>/manifest.json, raw/<페이지 id>.heic  Mac만 쓴다. 지우지 않는다
 ```
 
 ### 새 폴더를 만들지 않고 inbox를 그대로 쓴 이유
@@ -132,7 +135,7 @@ iCloud가 충돌을 풀며 만든 사본(`manifest 2.json` 등)은 iPhone이 다
 
 ### 지키는 규칙
 
-- iPhone의 원본은 Mac이 받았다고 확인되기 전에 지우지 않습니다. 자동 삭제는 Mac이 지금 판을 확인한 문서만 대상입니다(`RetentionPolicy`). iCloud에 올라간 것은 확인이 아닙니다
+- iPhone의 원본은 Mac이 받았다고 확인되기 전에 지우지 않습니다. 자동 삭제는 Mac이 지금 판을 확인하고, iCloud 폴더를 골랐으면 archive까지 확인된 문서만 대상입니다(`RetentionPolicy`). inbox에 올라간 것은 확인이 아닙니다
 - 사용자가 지운 장과 다시 찍어 버린 장은 예외입니다. 사용자가 고른 일입니다
 - 앱을 지우면 iCloud의 inbox는 남고, Mac이 받아 갑니다. 마지막 장은 manifest를 쓰기 전이면 원본만 남아 Mac이 가져가지 못합니다(파일 앱이나 Finder에서 꺼낼 수 있습니다)
 
@@ -150,6 +153,49 @@ iCloud가 충돌을 풀며 만든 사본(`manifest 2.json` 등)은 iPhone이 다
 
 iPhone과 Mac을 같이 올려야 합니다. 옛 Mac은 확인 파일을 쓰지 않아 iPhone이 "Mac에 있음"이 되지 못하고 간격을 늘려 가며 다시 올립니다(원본은 Mac으로 들어가고, iPhone 원본은 지우지 않으니 잃는 것은 없습니다). 옛 iPhone은 새 Mac에 그대로 보낼 수 있습니다(`revision` 없음은 0).
 
+## iCloud 영구 보관
+
+`src-tauri/src/archive.rs`. inbox는 운반용으로 두고, Mac이 보관함에 넣은 원본을 `archive/<문서 id>/`에 따로 남깁니다. 쓰는 쪽은 Mac 하나입니다.
+
+| 받은 경로 | archive에 넣는 방법 | 코드 |
+|---|---|---|
+| iCloud inbox | 확인 파일을 쓴 뒤 inbox 원본을 archive로 이름만 바꾼다. 같은 iCloud Drive 안이라 다시 올리지 않고, 내용이 Mac에 안 내려온(dataless) 파일도 옮겨진다 | `inbox::import_one`, `archive_document(…, Some(inbox))` |
+| Wi-Fi | 응답을 늦추지 않으려고 바로 하지 않는다. inbox 감시 고리가 1분마다 보관함에서 복사한다 | `archive::backfill` |
+| 이 기능 전에 받은 문서 | 앱을 켜면 첫 훑기에서 보관함에서 복사한다 | `archive::backfill` |
+
+- manifest는 원본을 다 넣은 뒤 마지막에 씁니다. 내용은 Mac 보관함의 manifest(iPhone 판)입니다
+- 지우지 않습니다. iPhone에서 지운 장과 다시 찍어 버린 장의 원본도 남고 manifest만 지금 판입니다. Mac 보관함에서 문서를 지워도 남습니다. 정리는 사람이 Finder에서 합니다
+- 대상은 iPhone에서 온 문서입니다. 받은 기록(`library/<id>/arrivals.json`)이 있거나 원본에 HEIC가 있으면 보관합니다. Mac 가져오기(⌘O)는 PDF와 그림을 JPEG, PNG로 넣으므로 빠집니다. 사용자가 이미 가진 파일을 또 올리지 않으려는 구분입니다
+- 실패하면 inbox 쪽은 예전처럼 지우고, 다음 백필이 보관함에서 복사합니다
+
+### 받은 기록
+
+Mac은 문서를 받을 때마다 `library/<문서 id>/arrivals.json`에 경로(`wifi`, `icloud`), 시각, 새 원본 수를 덧붙입니다(최근 50개). Mac 문서 화면 오른쪽 "받은 경로" 칸이 이 기록과 archive 상태를 보여 줍니다(`document_origin`, `src/views/OriginPanel.tsx`). 0.3.2 전에 받은 문서는 기록이 없습니다.
+
+### iPhone이 보관을 확인하는 법
+
+Mac이 받았다고 확인된 문서는 `BackupWork.verifyArchive`가 됩니다. iPhone은 `archive/<문서 id>/`에 manifest와 지금 판의 원본이 모두 보이는지 봅니다(`ICloudBackupEngine.isArchived`). 다른 기기가 쓴 파일은 iCloud 서버에 올라간 뒤에야 이 iPhone 목록에 나타나므로, 보이면 iCloud에 있는 것입니다. 내용은 내려받지 않습니다. 원본 파일 이름이 페이지 id라 같은 이름이면 같은 사진입니다.
+
+확인되면 `BackupEntry.archivedFingerprint`에 지문을 적습니다. 아직이면 20초에서 두 배씩 1시간까지 간격을 늘려 다시 봅니다(`BackupQueue.archiveCheckDelay`). 옛 Mac은 archive를 만들지 않으니 계속 20초로 보지 않으려는 것입니다.
+
+원본 자동 삭제는 iCloud 폴더를 골랐으면 archive까지 확인된 문서만 대상입니다(`RetentionPolicy.documentsToDelete`의 `archived`). 사본이 Mac 하나뿐일 때 지우지 않습니다.
+
+### 화면 표시
+
+장소마다 따로 보여 줍니다. 예전에는 한 칸에 "iCloud에 있음"과 "Mac에 있음" 중 하나만 보여서, Mac에 간 문서가 iCloud에도 있는지 알 수 없었습니다.
+
+| 화면 | 보여 주는 것 | 코드 |
+|---|---|---|
+| iPhone 목록 | `Mac`, `iCloud` 칩. 초록 체크는 Mac에 있음, 파란 체크는 iCloud에 있음(inbox나 archive), 주황 화살표는 올리는 중. 칩이 없으면 "iPhone에만" | `StorageBadges` (`ios/Scanshelf/Views/DocumentsView.swift`) |
+| iPhone 문서 | iPhone, Mac, iCloud 세 줄. Mac은 받은 경로(Wi-Fi, iCloud)와 시각, iCloud는 보관됨, 올라감(Mac 대기), 올리는 중 | `DocumentDetailView` |
+| iPhone 보관 현황 | 목록 오른쪽 위 버튼. 장소별 문서 수, 옮겨지는 방식 설명, "지금 Mac으로 보내기" | `StorageOverviewView` |
+| Mac 설정 | 받는 중인 문서 이름과 이유(iPhone이 올리는 중, iCloud에서 내려받는 중), 보관된 문서 수 | `InboxStatus.waiting`, `SettingsView.tsx` |
+| Mac 문서 | 받은 경로와 시각, iCloud 보관 여부 | `OriginPanel.tsx` |
+
+상태 계산은 Mac 쪽이 `SendStatus`, iCloud 쪽이 `CloudStatus`입니다(`ios/Scanshelf/Library/SendRecords.swift`). Mac이 받은 뒤 archive가 확인되기 전에는 iCloud가 "올리는 중"입니다. inbox 사본은 이미 치웠고 archive는 아직이라서입니다.
+
+예전 "모두 보내기"(종이비행기) 버튼은 보관 현황 화면 안으로 옮겼습니다. 하는 일(밀린 iCloud 복사 깨우기, Mac에 없는 문서 Wi-Fi로 보내기)은 앱을 열 때와 촬영을 마칠 때 저절로 하므로, 첫 화면 버튼으로는 무슨 일을 하는지 알 수 없었습니다.
+
 ## Mac 앱 화면 쪽 연결 (Tauri)
 
 화면은 아래 명령과 이벤트만 씁니다. 필드 이름은 JSON 그대로입니다.
@@ -160,7 +206,8 @@ iPhone과 Mac을 같이 올려야 합니다. 옛 Mac은 확인 파일을 쓰지 
 | `start_pairing` | 없음 | `{ code: string, expiresAt: string(RFC 3339) }`. 새 창을 열고 열려 있던 창은 버린다 |
 | `cancel_pairing` | 없음 | 없음 |
 | `remove_paired_device` | `{ deviceId: string }` | 없음. 목록과 키체인에서 지운다. 실패하면 오류 문자열 |
-| `icloud_inbox_status` | 없음 | `{ path: string, available: bool, pending: u32 }`. `pending`은 마지막 훑기에서 아직 못 가져온 문서 수 |
+| `icloud_inbox_status` | 없음 | `{ path, available, pending, waiting: [{ documentId, name, reason }], archivePath, archived, archivePending }`. `pending`은 마지막 훑기에서 아직 못 가져온 문서 수, `archived`는 archive에 다 들어간 문서 수 |
+| `document_origin` | `{ documentId }` | `{ arrivals: [{ route: "wifi"\|"icloud", at, added }], archive: "done"\|"partial"\|"notApplicable" }` |
 
 | 이벤트 | 내용 | 언제 |
 |---|---|---|

@@ -17,6 +17,11 @@ struct BackupEntry: Codable, Equatable, Sendable {
     /// 같은 판을 다시 올린 횟수
     var recopies = 0
     var lastError: String?
+    /// Mac이 iCloud archive에 원본을 다 넣었다고 iPhone에서 보인 지문. 화면의 "iCloud 보관"과 원본 자동 삭제가 이 값을 본다.
+    /// 옛 기록에는 없어 Optional이다
+    var archivedFingerprint: String?
+    /// archive를 확인한 횟수. 간격을 늘리는 데 쓴다
+    var archiveChecks: Int?
 }
 
 struct BackupState: Codable, Equatable, Sendable {
@@ -55,6 +60,8 @@ enum BackupWork: Equatable, Sendable {
     case watch
     /// Mac이 받았으니 iCloud 사본을 치운다
     case cleanup
+    /// Mac이 받았고 inbox도 비웠다. Mac이 archive에 원본을 다 넣었는지 본다
+    case verifyArchive
 }
 
 struct BackupItem: Equatable, Sendable {
@@ -71,7 +78,9 @@ enum BackupQueue {
 
     static func work(hasPages: Bool, fingerprint: String, record: SendRecord?, entry: BackupEntry?) -> BackupWork {
         if record?.confirmed == true, record?.manifestFingerprint == fingerprint {
-            return entry?.copiedFingerprint == nil ? .none : .cleanup
+            if entry?.copiedFingerprint != nil { return .cleanup }
+            guard hasPages else { return .none }
+            return entry?.archivedFingerprint == fingerprint ? .none : .verifyArchive
         }
         guard let entry else { return hasPages ? .copy : .none }
         if !hasPages, entry.macRaws.isEmpty, entry.copiedFingerprint == nil { return .none }
@@ -85,6 +94,11 @@ enum BackupQueue {
             let work = work(hasPages: !manifest.pages.isEmpty, fingerprint: fingerprint, record: records[manifest.id], entry: entries[manifest.id])
             return work == .none ? nil : BackupItem(id: manifest.id, work: work)
         }
+    }
+
+    /// archive 확인 간격. Mac은 1분마다 채우고 iCloud가 그걸 내려 주는 데 또 걸린다. 20초에서 두 배씩, 1시간까지
+    static func archiveCheckDelay(checks: Int) -> TimeInterval {
+        min(watchInterval * pow(2, Double(max(checks, 0))), maxDelay)
     }
 
     /// 실패 뒤 기다리는 시간. 15초에서 시작해 두 배씩, 1시간까지

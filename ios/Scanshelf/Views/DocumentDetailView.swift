@@ -39,26 +39,28 @@ struct DocumentDetailView: View {
                 .onChange(of: kind) { save(manifest) }
             }
 
-            Section("보내기") {
-                HStack {
-                    Text("상태")
-                    Spacer()
-                    SendStatusBadge(status: app.status(of: manifest))
-                }
+            Section {
+                StorageRow(place: "iPhone", systemImage: "iphone", text: "있음", tone: .secondary)
+                StorageRow(place: "Mac", systemImage: "desktopcomputer", text: macText(manifest), tone: macTone(manifest))
+                StorageRow(place: "iCloud", systemImage: "icloud", text: cloudText(manifest), tone: cloudTone(manifest))
                 if let reason = app.failures[manifest.id] {
                     Text("Wi-Fi로 보내지 못했습니다: \(reason)").font(.footnote).foregroundStyle(.red)
                 }
                 if let reason = app.backup.state.entries[manifest.id]?.lastError {
-                    Text("iCloud 백업을 다시 시도합니다: \(reason)").font(.footnote).foregroundStyle(.secondary)
+                    Text("iCloud 복사를 다시 시도합니다: \(reason)").font(.footnote).foregroundStyle(.secondary)
                 }
-                Button("Mac으로 보내기 (Wi-Fi)", systemImage: "wifi") {
+                Button("지금 Mac으로 보내기 (Wi-Fi)", systemImage: "wifi") {
                     Task { await app.send(manifest.id) }
                 }
                 .disabled(app.settings.pairedMac == nil || manifest.pages.isEmpty)
-                Button("iCloud 백업 지금 다시 시도", systemImage: "icloud") {
+                Button("iCloud 복사 지금 다시 시도", systemImage: "icloud") {
                     app.retryBackup(manifest.id)
                 }
                 .disabled(!app.iCloud.isChosen || manifest.pages.isEmpty)
+            } header: {
+                Text("어디에 있나")
+            } footer: {
+                Text("같은 Wi-Fi에 Mac이 있으면 Wi-Fi로, 떨어져 있으면 iCloud로 Mac에 갑니다. Mac은 받은 원본을 iCloud scanshelf/archive에 계속 보관합니다.")
             }
 
             Section("\(manifest.pages.count)장") {
@@ -109,8 +111,39 @@ struct DocumentDetailView: View {
                 dismiss()
             }
         } message: {
-            Text("Mac으로 보낸 문서는 Mac에 남습니다.")
+            Text("Mac과 iCloud 보관 폴더에 있는 사본은 남습니다.")
         }
+    }
+
+    private func macText(_ manifest: Manifest) -> String {
+        switch app.status(of: manifest) {
+        case let .sent(method, date):
+            "\(method == .wifi ? "Wi-Fi" : "iCloud")로 받음, \(date.formatted(date: .abbreviated, time: .shortened))"
+        case let .sending(progress): "Wi-Fi로 보내는 중 \(Int(progress * 100))%"
+        case .changedSinceSent: "예전 판만 있음. 더 찍은 장을 보내는 중"
+        case .failed: "보내지 못함"
+        case .awaitingMac: "iCloud에서 가져가기를 기다림"
+        case .notSent, .backupPending: "아직 없음"
+        }
+    }
+
+    private func macTone(_ manifest: Manifest) -> Color {
+        if case .sent = app.status(of: manifest) { return .green }
+        return .secondary
+    }
+
+    private func cloudText(_ manifest: Manifest) -> String {
+        switch app.cloudStatus(of: manifest) {
+        case .archived: "보관됨"
+        case .inInbox: "올라감. Mac이 가져가면 보관 폴더로 옮김"
+        case .uploading:
+            if case .sent = app.status(of: manifest) { "Mac이 보관 폴더에 올리는 중" } else { "올리는 중" }
+        case .off: "iCloud 폴더를 고르지 않음"
+        }
+    }
+
+    private func cloudTone(_ manifest: Manifest) -> Color {
+        app.cloudStatus(of: manifest).isSafe ? .blue : .secondary
     }
 
     private func save(_ manifest: Manifest) {
@@ -122,6 +155,22 @@ struct DocumentDetailView: View {
             try app.updateMetadata(current, name: trimmed, kind: kind, session: session)
         } catch {
             failure = error.localizedDescription
+        }
+    }
+}
+
+/// 한 장소의 사본 상태 한 줄
+private struct StorageRow: View {
+    let place: String
+    let systemImage: String
+    let text: String
+    let tone: Color
+
+    var body: some View {
+        HStack {
+            Label(place, systemImage: systemImage)
+            Spacer()
+            Text(text).font(.callout).foregroundStyle(tone).multilineTextAlignment(.trailing)
         }
     }
 }

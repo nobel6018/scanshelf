@@ -15,6 +15,7 @@ import type {
   ImportResult,
   QuickOpenEntry,
   InboxStatus,
+  DocumentOrigin,
   OcrPage,
   PairingCode,
   PamphletSummary,
@@ -70,6 +71,7 @@ export const api = {
   cancelPairing: () => invokeOptional<void>("cancel_pairing"),
   removePairedDevice: (deviceId: string) => invokeOptional<void>("remove_paired_device", { deviceId }),
   icloudInboxStatus: () => invokeOptional<InboxStatus>("icloud_inbox_status"),
+  documentOrigin: (documentId: string) => invokeOptional<DocumentOrigin>("document_origin", { documentId }),
 
   // AI 정리(ai 담당, 리드가 연결)
   summarizePamphlet: (documentId: string) => invokeOptional<PamphletSummary>("summarize_pamphlet", { documentId }),

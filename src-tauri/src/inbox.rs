@@ -36,6 +36,8 @@ pub struct InboxScan {
     pub imported: Vec<Uuid>,
     /// 아직 가져오지 못한 문서 폴더 수(동기화 중, 내려받는 중, 오류)
     pub pending: u32,
+    /// 아직 가져오지 못한 문서마다 이름과 이유. 설정 화면이 개수만이 아니라 무엇을 기다리는지 보여 준다
+    pub waiting: Vec<PendingDocument>,
     /// 가져오기에 실패한 문서와 이유. 감시 고리가 같은 오류를 5초마다 되풀이해 남기지 않도록 부른 쪽이 거른다
     pub failed: Vec<(Uuid, String)>,
 }
@@ -155,12 +157,29 @@ pub fn scan_inbox(inbox: &Path, store: &Store, request_download: &mut dyn FnMut(
             Ok(Step::ImportedWithoutReceipt(error)) => {
                 // 가져오기는 끝났지만 iPhone에 알리지 못했다. inbox를 그대로 두고 다음 훑기에서 다시 적는다
                 scan.imported.push(id);
+                scan.waiting.push(PendingDocument {
+                    document_id: id,
+                    name: None,
+                    reason: "받았지만 iPhone에 알리지 못함".into(),
+                });
                 scan.failed.push((id, error));
                 scan.pending += 1;
             }
-            Ok(Step::Waiting) => scan.pending += 1,
+            Ok(Step::Waiting { name, reason }) => {
+                scan.waiting.push(PendingDocument {
+                    document_id: id,
+                    name,
+                    reason,
+                });
+                scan.pending += 1;
+            }
             Ok(Step::Empty) => {}
             Err(error) => {
+                scan.waiting.push(PendingDocument {
+                    document_id: id,
+                    name: None,
+                    reason: format!("오류: {error}"),
+                });
                 scan.failed.push((id, error));
                 scan.pending += 1;
             }
@@ -169,11 +188,21 @@ pub fn scan_inbox(inbox: &Path, store: &Store, request_download: &mut dyn FnMut(
     scan
 }
 
+/// inbox에서 아직 가져오지 못한 문서
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingDocument {
+    pub document_id: Uuid,
+    /// manifest를 아직 못 읽었으면 없다
+    pub name: Option<String>,
+    pub reason: String,
+}
+
 enum Step {
     Imported,
     ImportedWithoutReceipt(String),
     /// 아직 준비가 안 됐다
-    Waiting,
+    Waiting { name: Option<String>, reason: String },
     /// 비어 있던 폴더를 치웠다
     Empty,
 }
@@ -190,10 +219,20 @@ fn import_one(
         FileState::Ready => {}
         FileState::NotDownloaded => {
             request_download(&manifest_path);
-            return Ok(Step::Waiting);
+            return Ok(Step::Waiting {
+                name: None,
+                reason: "문서 정보를 iCloud에서 내려받는 중".into(),
+            });
         }
         FileState::Absent => {
-            return Ok(if remove_if_empty(dir) { Step::Empty } else { Step::Waiting });
+            return Ok(if remove_if_empty(dir) {
+                Step::Empty
+            } else {
+                Step::Waiting {
+                    name: None,
+                    reason: "iPhone이 올리는 중".into(),
+                }
+            });
         }
     }
     // 한 번 읽은 바이트로 해시와 내용을 함께 얻는다. 따로 읽으면 그 사이 iPhone이 바꾼 판을 받았다고 잘못 알린다
@@ -207,8 +246,8 @@ fn import_one(
     // 옛 판이면 원본이 빠져 있어도(iPhone에서 지운 장) 기다리지 않는다. 가져오기가 아무것도 바꾸지 않고 끝낸다
     if !store.is_stale(&manifest) {
         let library = store.document_dir(id);
-        let mut ready = true;
-        let mut absent = false;
+        let mut downloading = 0usize;
+        let mut absent_count = 0usize;
         for page in &manifest.pages {
             if !is_raw_path(&page.raw) {
                 return Err(format!("raw 경로는 raw/ 아래여야 한다: {}", page.raw));
@@ -223,32 +262,43 @@ fn import_one(
                 FileState::Ready => {}
                 FileState::NotDownloaded => {
                     request_download(&path);
-                    ready = false;
+                    downloading += 1;
                 }
-                FileState::Absent => {
-                    ready = false;
-                    absent = true;
-                }
+                FileState::Absent => absent_count += 1,
             }
         }
-        if !ready {
-            if absent && !library.join(MANIFEST_FILE).is_file() {
+        if downloading + absent_count > 0 {
+            if absent_count > 0 && !library.join(MANIFEST_FILE).is_file() {
                 ask_for_everything_again(inbox, id);
             }
-            return Ok(Step::Waiting);
+            let reason = if absent_count > 0 {
+                format!("원본 {absent_count}장을 iPhone이 올리는 중")
+            } else {
+                format!("원본 {downloading}장을 iCloud에서 내려받는 중")
+            };
+            return Ok(Step::Waiting {
+                name: Some(manifest.name.clone()),
+                reason,
+            });
         }
     }
 
     let _busy = crate::busy::start(format!("iCloud에서 가져오는 중: {}", manifest.name));
     let outcome = match store.import(&manifest, dir, ImportMode::Copy) {
         Ok(outcome) => outcome,
-        Err(StoreError::MissingFiles(_)) => return Ok(Step::Waiting),
+        Err(StoreError::MissingFiles(missing)) => {
+            return Ok(Step::Waiting {
+                name: Some(manifest.name.clone()),
+                reason: format!("원본 {}장을 기다리는 중", missing.len()),
+            });
+        }
         Err(error) => return Err(error.to_string()),
     };
     if outcome.stale {
         eprintln!("iCloud inbox의 옛 manifest를 건너뜀: {id}");
     } else {
         eprintln!("문서 받음 (iCloud): {id} (새 원본 {}개)", outcome.added_raw.len());
+        crate::archive::record_arrival(&store.document_dir(id), crate::archive::Route::Icloud, outcome.added_raw.len());
     }
 
     // 확인 파일을 먼저 쓰고 지운다. 순서가 반대면 멈췄을 때 iPhone이 알 길 없이 파일만 사라진다
@@ -260,6 +310,13 @@ fn import_one(
     };
     if let Err(error) = write_receipt(inbox, &receipt) {
         return Ok(Step::ImportedWithoutReceipt(format!("받은 것을 iPhone에 알리지 못했다: {error}")));
+    }
+    // 지우기 전에 원본을 archive로 옮긴다(영구 보관). 같은 iCloud Drive 안의 이름 바꾸기라 다시 올리지 않는다.
+    // 실패하면 inbox 쪽은 아래에서 지우고, 백필이 보관함에서 복사해 채운다
+    if !outcome.stale
+        && let Err(error) = crate::archive::archive_document(store, &crate::archive::archive_root(inbox), id, Some(dir))
+    {
+        eprintln!("iCloud 보관 실패 ({id}), 다음 백필에서 다시 한다: {error}");
     }
     clear_imported(dir, &manifest, &bytes);
     Ok(Step::Imported)
@@ -318,15 +375,48 @@ pub struct InboxStatus {
     pub path: String,
     pub available: bool,
     pub pending: u32,
+    /// 아직 가져오지 못한 문서와 이유
+    pub waiting: Vec<PendingDocument>,
+    /// iCloud archive 폴더
+    pub archive_path: String,
+    /// archive에 다 들어간 문서 수와 아직 덜 들어간 문서 수(보관 대상만)
+    pub archived: u32,
+    pub archive_pending: u32,
 }
 
 pub struct InboxState {
     path: Option<PathBuf>,
     pending: Arc<AtomicU32>,
+    waiting: Arc<std::sync::Mutex<Vec<PendingDocument>>>,
+    store: Arc<Store>,
+}
+
+impl InboxState {
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
+    pub fn inbox_path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
 }
 
 #[tauri::command]
 pub fn icloud_inbox_status(state: tauri::State<'_, InboxState>) -> InboxStatus {
+    let archive = state.path.as_deref().map(crate::archive::archive_root);
+    let (mut archived, mut archive_pending) = (0, 0);
+    if let Ok(entries) = fs::read_dir(state.store.library_dir()) {
+        for entry in entries.flatten() {
+            let Ok(id) = Uuid::parse_str(&entry.file_name().to_string_lossy()) else {
+                continue;
+            };
+            match crate::archive::archive_state(&state.store, archive.as_deref(), id) {
+                crate::archive::ArchiveState::Done => archived += 1,
+                crate::archive::ArchiveState::Partial => archive_pending += 1,
+                crate::archive::ArchiveState::NotApplicable => {}
+            }
+        }
+    }
     InboxStatus {
         path: state
             .path
@@ -335,6 +425,10 @@ pub fn icloud_inbox_status(state: tauri::State<'_, InboxState>) -> InboxStatus {
             .unwrap_or_default(),
         available: state.path.as_ref().is_some_and(|p| p.is_dir()),
         pending: state.pending.load(Ordering::SeqCst),
+        waiting: state.waiting.lock().map(|w| w.clone()).unwrap_or_default(),
+        archive_path: archive.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+        archived,
+        archive_pending,
     }
 }
 
@@ -390,9 +484,12 @@ pub fn setup(app: &tauri::AppHandle, store: Arc<Store>) {
 
     let path = icloud_inbox_dir();
     let pending = Arc::new(AtomicU32::new(0));
+    let waiting = Arc::new(std::sync::Mutex::new(Vec::new()));
     app.manage(InboxState {
         path: path.clone(),
         pending: pending.clone(),
+        waiting: waiting.clone(),
+        store: store.clone(),
     });
 
     #[cfg(target_os = "macos")]
@@ -406,13 +503,17 @@ pub fn setup(app: &tauri::AppHandle, store: Arc<Store>) {
         let app = app.clone();
         std::thread::spawn(move || {
             prune_receipts(&inbox, RECEIPT_MAX_AGE);
+            let archive = crate::archive::archive_root(&inbox);
             let mut request = download_requester();
             let mut reported: HashSet<(Uuid, String)> = HashSet::new();
+            let mut round: u64 = 0;
             loop {
-                let mut waiting = 0;
+                let mut count = 0;
+                let mut names = Vec::new();
                 for dir in std::iter::once(inbox.clone()).chain(legacy_inbox_dir()) {
                     let scan = scan_inbox(&dir, &store, &mut request);
-                    waiting += scan.pending;
+                    count += scan.pending;
+                    names.extend(scan.waiting);
                     for id in scan.imported {
                         crate::transfer::emit_library_changed(&app, id);
                     }
@@ -423,11 +524,22 @@ pub fn setup(app: &tauri::AppHandle, store: Arc<Store>) {
                         }
                     }
                 }
-                pending.store(waiting, Ordering::SeqCst);
+                pending.store(count, Ordering::SeqCst);
+                if let Ok(mut slot) = waiting.lock() {
+                    *slot = names;
+                }
+                // Wi-Fi로 받은 문서와 이 기능 전에 받은 문서를 1분마다 archive에 채운다. 첫 훑기에서 바로 한 번 한다
+                if round.is_multiple_of(12) {
+                    let (done, failed) = crate::archive::backfill(&store, &archive);
+                    if done + failed > 0 {
+                        eprintln!("iCloud 보관: {done}개 채움, {failed}개 실패");
+                    }
+                }
+                round += 1;
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
         });
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = (store, pending);
+    let _ = (store, pending, waiting);
 }

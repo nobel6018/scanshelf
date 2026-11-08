@@ -74,6 +74,16 @@ final class AppModel: BackupHost {
         )
     }
 
+    func cloudStatus(of manifest: Manifest) -> CloudStatus {
+        CloudStatus.resolve(
+            folderChosen: iCloud.isChosen,
+            hasPages: !manifest.pages.isEmpty,
+            fingerprint: try? manifest.fingerprint(),
+            record: records[manifest.id],
+            backup: backup.state.entries[manifest.id]
+        )
+    }
+
     /// iCloud 폴더가 없거나 닿지 않으면 스캔은 이 iPhone에만 있다. 문서 목록과 촬영 화면에 계속 띄운다
     var backupNotice: BackupNotice? {
         BackupNotice.of(folderChosen: iCloud.isChosen, folderFailure: backup.folderFailure)
@@ -233,7 +243,8 @@ final class AppModel: BackupHost {
             records: records,
             fingerprints: fingerprints,
             days: settings.retentionPolicyDays,
-            now: now
+            now: now,
+            archived: iCloud.isChosen ? backup.state.entries.compactMapValues(\.archivedFingerprint) : nil
         )
         for id in expired {
             try? deleteDocument(id)

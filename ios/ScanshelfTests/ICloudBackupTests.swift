@@ -45,6 +45,16 @@ private struct FakeMac {
         try? FileManager.default.removeItem(at: inbox)
     }
 
+    /// Mac의 archive.rs가 하는 일: 보관함 원본과 manifest를 archive에 둔다
+    func archive(_ manifest: Manifest) throws {
+        let target = ICloudFolderLayout.archive(in: root, documentID: manifest.id)
+        try FileManager.default.createDirectory(at: target.appending(path: "raw"), withIntermediateDirectories: true)
+        for page in manifest.pages {
+            try Data("archived".utf8).write(to: target.appending(path: page.raw))
+        }
+        try Data("{}".utf8).write(to: target.appending(path: "manifest.json"))
+    }
+
     func writeReceipt(_ documentID: UUID, sha256: String?, raw: [String]) throws {
         let url = ICloudFolderLayout.receipt(in: root, documentID: documentID)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -208,6 +218,38 @@ struct ICloudBackupFlowTests {
         let fingerprints = [manifest.id: try manifest.fingerprint()]
         let expired = RetentionPolicy.documentsToDelete(records: rig.host.records, fingerprints: fingerprints, days: 7, now: later(8 * 86400))
         #expect(expired == [manifest.id])
+    }
+
+    @Test func Mac이_archive에_넣으면_iCloud_보관이_되고_그때부터_원본_삭제_대상이_된다() async throws {
+        let rig = Rig()
+        let manifest = try rig.capture(try rig.newDocument(), byte: 1)
+        await rig.backup.runDue()
+        try rig.mac.importInbox(manifest.id)
+        await rig.backup.runDue(now: later(30))
+
+        let fingerprint = try manifest.fingerprint()
+        func cloud() -> CloudStatus {
+            CloudStatus.resolve(folderChosen: true, hasPages: true, fingerprint: fingerprint, record: rig.host.records[manifest.id], backup: rig.backup.state.entries[manifest.id])
+        }
+        func expired() -> [UUID] {
+            RetentionPolicy.documentsToDelete(
+                records: rig.host.records,
+                fingerprints: [manifest.id: fingerprint],
+                days: 7,
+                now: later(8 * 86400),
+                archived: rig.backup.state.entries.compactMapValues(\.archivedFingerprint)
+            )
+        }
+        // Mac에는 있지만 archive가 아직이면 사본이 Mac 하나뿐이다. 지우지 않는다
+        #expect(cloud() == .uploading)
+        #expect(expired().isEmpty)
+
+        try rig.mac.archive(manifest)
+        await rig.backup.runDue(now: later(3600))
+
+        #expect(rig.backup.state.entries[manifest.id]?.archivedFingerprint == fingerprint)
+        #expect(cloud() == .archived)
+        #expect(expired() == [manifest.id])
     }
 
     @Test func 지문이_앞선_판이면_받은_원본만_기억하고_확인하지_않는다() async throws {
@@ -463,7 +505,16 @@ struct BackupQueueTests {
         #expect(BackupQueue.work(hasPages: true, fingerprint: "a", record: record, entry: entry) == .cleanup)
 
         entry.copiedFingerprint = nil
+        #expect(BackupQueue.work(hasPages: true, fingerprint: "a", record: record, entry: entry) == .verifyArchive)
+
+        entry.archivedFingerprint = "a"
         #expect(BackupQueue.work(hasPages: true, fingerprint: "a", record: record, entry: entry) == .none)
+    }
+
+    @Test func archive_확인_간격은_두_배씩_늘고_1시간에서_멈춘다() {
+        #expect(BackupQueue.archiveCheckDelay(checks: 0) == 20)
+        #expect(BackupQueue.archiveCheckDelay(checks: 2) == 80)
+        #expect(BackupQueue.archiveCheckDelay(checks: 20) == 3600)
     }
 
     @Test func Wi_Fi로_받은_뒤_바뀐_판은_다시_올린다() {
@@ -620,5 +671,33 @@ struct ManifestRevisionTests {
         let bytes = try Data(contentsOf: store.manifestURL(of: manifest.id))
 
         #expect(SHA256.hash(data: bytes).hexString == (try manifest.fingerprint()))
+    }
+}
+
+struct CloudStatusTests {
+    @Test func 장소별_상태를_따로_센다() {
+        let counts = StorageCounts.tally([
+            (.sent(.wifi, .now), .archived),
+            (.sent(.icloud, .now), .uploading),
+            (.awaitingMac(.icloud), .inInbox),
+            (.backupPending, .uploading),
+            (.notSent, .off),
+        ])
+        #expect(counts.total == 5)
+        #expect(counts.onMac == 2)
+        #expect(counts.viaWiFi == 1)
+        #expect(counts.archived == 1)
+        #expect(counts.inInbox == 1)
+        #expect(counts.uploading == 2)
+        // Mac에 있으면 앱을 지워도 남는다. inbox에 올라간 것도 남는다
+        #expect(counts.onlyHere == 2)
+    }
+
+    @Test func Mac이_받으면_inbox_상태가_아니라_archive를_기다린다() {
+        let delivered = SendRecord(method: .wifi, sentAt: .now, manifestFingerprint: "a", confirmed: true)
+        let uploaded = BackupEntry(uploadedFingerprint: "a")
+        #expect(CloudStatus.resolve(folderChosen: true, hasPages: true, fingerprint: "a", record: nil, backup: uploaded) == .inInbox)
+        #expect(CloudStatus.resolve(folderChosen: true, hasPages: true, fingerprint: "a", record: delivered, backup: uploaded) == .uploading)
+        #expect(CloudStatus.resolve(folderChosen: false, hasPages: true, fingerprint: "a", record: delivered, backup: uploaded) == .off)
     }
 }
