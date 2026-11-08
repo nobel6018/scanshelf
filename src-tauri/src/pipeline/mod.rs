@@ -201,12 +201,14 @@ const REDETECT_SIDE: u32 = 2000;
 /// 1. 원본 해상도에서 문서 영역 감지
 /// 2. 2000px로 줄여 문서 영역 감지(밝은 책상 위 흰 펼침에서 원본은 틀리고 줄인 쪽이 맞는 경우가 있었다)
 /// 3. 사각형 감지(테두리 직선). 펼침은 한 쪽씩 잡힌 사각형 둘을 합친다
+/// 4. 꼭짓점 하나만 틀린 테두리(문서 영역 감지 두 번과 iPhone 값)를 나머지 셋으로 고친다(`repair_one_corner`)
 /// 펼침인데 세로로 긴 테두리(한 쪽만 잡힘, 왼쪽이 검은 표지일 때 흔하다)는 버린다. 한 쪽을 잃느니 사진 전체가 낫다.
 /// @see docs/pipeline.md
-fn find_page_quad(image: &RgbImage, layout: PageLayout) -> Option<Quad> {
+fn find_page_quad(image: &RgbImage, layout: PageLayout, phone: Option<Quad>) -> Option<Quad> {
     let aspect = image.height() as f64 / image.width().max(1) as f64;
     let fits = |q: &Quad| q.is_plausible(aspect) && (layout != PageLayout::Spread || quad_width_ratio(q, aspect) >= 1.0);
-    if let Some(quad) = platform::detect_document_quad(image).filter(fits) {
+    let full = platform::detect_document_quad(image);
+    if let Some(quad) = full.filter(fits) {
         return Some(quad);
     }
     let small = image::imageops::thumbnail(
@@ -214,13 +216,50 @@ fn find_page_quad(image: &RgbImage, layout: PageLayout) -> Option<Quad> {
         REDETECT_SIDE.min(image.width()),
         (REDETECT_SIDE as f64 * aspect).round().min(image.height() as f64) as u32,
     );
-    if let Some(quad) = platform::detect_document_quad(&small).filter(fits) {
+    let reduced = platform::detect_document_quad(&small);
+    if let Some(quad) = reduced.filter(fits) {
         return Some(quad);
     }
     // 크기마다 잡히는 변이 달라 두 크기의 후보를 모은다
     let mut rects = platform::detect_rectangle_quads(&small);
     rects.extend(platform::detect_rectangle_quads(image));
-    pick_rectangle(&rects, aspect, layout)
+    if let Some(quad) = pick_rectangle(&rects, aspect, layout) {
+        return Some(quad);
+    }
+    // 꼭짓점 하나만 접힌 선에 붙은 테두리(Vision과 iPhone이 같은 모양으로 틀린다)를 고쳐 쓴다
+    let corners: Vec<scanshelf_core::Point> = rects.iter().flat_map(|q| q.points()).collect();
+    [full, reduced, phone].into_iter().flatten().find_map(|q| repair_one_corner(&q, &corners, aspect, &fits))
+}
+
+/// 꼭짓점 하나가 틀린 테두리를 고친다. 나머지 셋으로 평행사변형을 완성해 틀린 꼭짓점 자리를 정하고,
+/// 그 근처(사진 폭의 4%)에 사각형 감지 꼭짓점이 있으면 그 자리로 맞춘다(원근 때문에 평행사변형은 조금 어긋난다).
+/// 고친 결과가 믿을 만한 꼭짓점이 하나뿐일 때만 쓴다. 둘 이상이면 어느 꼭짓점이 틀렸는지 모른다.
+/// 사진 넓이의 10%보다 작으면 버린다. 직각만 맞는 가느다란 띠(화면 밖으로 나간 3단 접지)가 나온 적이 있다
+fn repair_one_corner(
+    quad: &Quad,
+    corners: &[scanshelf_core::Point],
+    aspect: f64,
+    fits: &dyn Fn(&Quad) -> bool,
+) -> Option<Quad> {
+    const SNAP: f64 = 0.04;
+    const MIN_AREA: f64 = 0.1;
+    let fits = |q: &Quad| fits(q) && quad_area(q, aspect) / aspect >= MIN_AREA;
+    let points = quad.points();
+    let mut repaired = (0..4).filter_map(|i| {
+        let (prev, next, opposite) = (points[(i + 3) % 4], points[(i + 1) % 4], points[(i + 2) % 4]);
+        let guess = scanshelf_core::Point { x: prev.x + next.x - opposite.x, y: prev.y + next.y - opposite.y };
+        let distance = |p: &scanshelf_core::Point| (p.x - guess.x).hypot((p.y - guess.y) * aspect);
+        let snapped = corners.iter().filter(|p| distance(p) < SNAP).min_by(|a, b| distance(a).total_cmp(&distance(b)));
+        let with = |corner: scanshelf_core::Point| {
+            let mut p = points;
+            p[i] = corner;
+            Quad { top_left: p[0], top_right: p[1], bottom_right: p[2], bottom_left: p[3] }
+        };
+        let in_frame = (0.0..=1.0).contains(&guess.x) && (0.0..=1.0).contains(&guess.y);
+        snapped.map(|c| with(*c)).filter(|q| fits(q)).or_else(|| in_frame.then(|| with(guess)).filter(|q| fits(q)))
+    });
+    let first = repaired.next()?;
+    repaired.next().is_none().then_some(first)
 }
 
 /// 테두리의 폭/높이(사진 비율을 맞춘 길이)
@@ -398,7 +437,7 @@ pub fn process_document(ctx: &ProcessContext<'_>) -> Result<Processing, String> 
             report(index, "decode");
             let raw_path = dir.join(&page.raw);
             let image = platform::decode_oriented(&raw_path, None).map_err(|e| e.to_string())?;
-            let (quad, detected_quad) = choose_quad(page.quad, &image, |image| find_page_quad(image, page.layout));
+            let (quad, detected_quad) = choose_quad(page.quad, &image, |image| find_page_quad(image, page.layout, page.quad));
             let mut checks = Vec::new();
             if quad.is_none() {
                 checks.push(steps::PageCheck::QuadMissing);
@@ -585,7 +624,7 @@ mod rotation_tests {
 
 #[cfg(test)]
 mod quad_choice_tests {
-    use super::{choose_quad, pick_rectangle};
+    use super::{choose_quad, pick_rectangle, repair_one_corner};
     use scanshelf_core::PageLayout;
     use image::RgbImage;
     use scanshelf_core::{Point, Quad};
@@ -660,6 +699,41 @@ mod quad_choice_tests {
     #[test]
     fn 한_쪽으로_찍은_장은_세로_사각형도_쓴다() {
         assert_eq!(pick_rectangle(&[right_page()], ASPECT, PageLayout::Single), Some(right_page()));
+    }
+
+    /// 2026-11-08 로보월드_9 8번: 왼쪽 위 꼭짓점만 가운데 접힌 선에 붙었다(Vision과 iPhone 모두)
+    fn corner_on_gutter() -> Quad {
+        quad([(0.49, 0.18), (0.93, 0.18), (0.94, 0.66), (0.03, 0.68)])
+    }
+    fn spread_fits(q: &Quad) -> bool {
+        q.is_plausible(ASPECT) && super::quad_width_ratio(q, ASPECT) >= 1.0
+    }
+
+    #[test]
+    fn 꼭짓점_하나가_틀린_테두리는_나머지_셋으로_고친다() {
+        let fixed = repair_one_corner(&corner_on_gutter(), &[], ASPECT, &spread_fits).unwrap();
+        // 평행사변형으로 채운 자리: (0.93 + 0.03 - 0.94, 0.18 + 0.68 - 0.66)
+        assert!((fixed.top_left.x - 0.02).abs() < 1e-9 && (fixed.top_left.y - 0.20).abs() < 1e-9);
+        assert_eq!(fixed.bottom_right, corner_on_gutter().bottom_right);
+    }
+
+    #[test]
+    fn 고친_꼭짓점_근처에_사각형_감지_꼭짓점이_있으면_그_자리로_맞춘다() {
+        let detected = scanshelf_core::Point { x: 0.02, y: 0.19 };
+        let fixed = repair_one_corner(&corner_on_gutter(), &[detected], ASPECT, &spread_fits).unwrap();
+        assert_eq!(fixed.top_left, detected);
+    }
+
+    /// 2026-11-08 로보월드_6 2번(화면 밖으로 나간 3단 접지) iPhone 값. 오른쪽 아래를 고치면 가느다란 띠가 된다
+    #[test]
+    fn 고친_테두리가_가느다란_띠면_쓰지_않는다() {
+        let cut_off = quad([(0.375, 0.551), (0.847, 0.25), (1.0, 0.996), (0.382, 0.559)]);
+        assert_eq!(repair_one_corner(&cut_off, &[], ASPECT, &|q: &Quad| q.is_plausible(ASPECT)), None);
+    }
+
+    #[test]
+    fn 꼭짓점_둘이_틀리면_고치지_않는다() {
+        assert_eq!(repair_one_corner(&triangle(), &[], ASPECT, &spread_fits), None);
     }
 
     #[test]
