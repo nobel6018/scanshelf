@@ -233,6 +233,13 @@ export interface InboxStatus {
   archivePending: number;
 }
 
+/** 보관함 ⌘R 한 번의 iCloud inbox 훑기 결과 */
+export interface InboxRefresh {
+  available: boolean;
+  imported: number;
+  waiting: PendingInboxDocument[];
+}
+
 // 받은 경로와 iCloud 보관(src-tauri/src/archive.rs)
 export interface Arrival {
   route: "wifi" | "icloud";

@@ -22,6 +22,8 @@ export type AppUpdateState =
   /** updater로 확인하지 못했다(0.9.2 이하 Release 등). Release 페이지로 안내한다 */
   | { kind: "link"; version: string; current: string; url: string };
 
+export type UpdateCheckResult = { kind: "new"; version: string } | { kind: "latest"; current: string } | { kind: "failed" };
+
 export function useAppUpdate() {
   const [state, setState] = useState<AppUpdateState>({ kind: "none" });
   /** 진행 중인 작업이 있어 설치하지 않았을 때 보여 줄 문구 */
@@ -31,8 +33,9 @@ export function useAppUpdate() {
   /** 받아 두었으면 다음에 누를 때 다시 받지 않는다 */
   const downloaded = useRef(false);
 
-  /** manual: 메뉴나 설정에서 눌렀다. 새 버전이 없어도 "최신 버전" 결과를 남긴다 */
-  const runCheck = useCallback(async (manual: boolean) => {
+  /** manual: 메뉴나 설정에서 눌렀다. 새 버전이 없어도 "최신 버전" 결과를 남긴다.
+   *  돌려주는 값은 보관함 ⌘R이 알림 문구에 쓴다(새 버전이면 띠도 뜬다) */
+  const runCheck = useCallback(async (manual: boolean): Promise<UpdateCheckResult> => {
     if (manual) {
       setState({ kind: "checking" });
       setBlocked(null);
@@ -44,20 +47,29 @@ export function useAppUpdate() {
         update.current = u;
         downloaded.current = false;
         setState({ kind: "ready", version: u.version, current: u.currentVersion });
-      } else if (manual) {
-        setState({ kind: "latest", current: await getVersion() });
+        return { kind: "new", version: u.version };
       }
+      const current = await getVersion();
+      if (manual) setState({ kind: "latest", current });
+      return { kind: "latest", current };
     } catch (e) {
       // latest.json을 못 읽었다(새 버전을 올리는 중이거나 네트워크). GitHub API로 다시 묻는다
       console.warn(`업데이트 확인 실패, GitHub API로 다시 확인합니다: ${e}`);
       const info = await checkForUpdateDetailed(/\.dmg$/);
-      if (typeof info === "object") setState({ kind: "link", version: info.latest, current: info.current, url: info.url });
-      else if (!manual) return;
-      else if (info === "none") setState({ kind: "latest", current: await getVersion() });
-      else {
+      if (typeof info === "object") {
+        setState({ kind: "link", version: info.latest, current: info.current, url: info.url });
+        return { kind: "new", version: info.latest };
+      }
+      if (info === "none") {
+        const current = await getVersion();
+        if (manual) setState({ kind: "latest", current });
+        return { kind: "latest", current };
+      }
+      if (manual) {
         setState({ kind: "none" });
         setError("업데이트를 확인하지 못했습니다. 인터넷 연결을 확인하거나 잠시 뒤 다시 확인해 주세요");
       }
+      return { kind: "failed" };
     }
   }, []);
 
@@ -71,6 +83,8 @@ export function useAppUpdate() {
   }, [runCheck]);
 
   const checkNow = useCallback(() => runCheck(true), [runCheck]);
+  /** 띠를 "확인 중", "최신 버전"으로 바꾸지 않고 확인만 한다. 새 버전이면 평소처럼 띠가 뜬다 */
+  const checkQuietly = useCallback(() => runCheck(false), [runCheck]);
 
   /** 진행 중인 작업이 있으면 문구를 띄우고 true */
   const stopIfBusy = async () => {
@@ -131,5 +145,5 @@ export function useAppUpdate() {
     setError(null);
   }, []);
 
-  return { state, blocked, error, install, dismiss, checkNow };
+  return { state, blocked, error, install, dismiss, checkNow, checkQuietly };
 }

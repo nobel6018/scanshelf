@@ -14,6 +14,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
@@ -389,6 +390,37 @@ pub struct InboxState {
     pending: Arc<AtomicU32>,
     waiting: Arc<std::sync::Mutex<Vec<PendingDocument>>>,
     store: Arc<Store>,
+    /// 감시 고리를 깨워 지금 한 번 훑게 한다. 고리가 없으면(iCloud Drive 꺼짐, macOS 아님) 없다
+    wake: Option<mpsc::Sender<mpsc::Sender<InboxRefresh>>>,
+}
+
+/// 보관함 ⌘R이 부른 훑기 한 번의 결과
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InboxRefresh {
+    /// iCloud inbox를 훑을 수 있는지
+    pub available: bool,
+    /// 이번 훑기에서 보관함으로 가져온 문서 수
+    pub imported: u32,
+    /// 아직 가져오지 못한 문서와 이유(동기화 중, 내려받는 중)
+    pub waiting: Vec<PendingDocument>,
+}
+
+/// 보관함 새로고침(⌘R). 5초 훑기를 기다리지 않고 지금 iCloud inbox를 훑는다.
+/// 직접 `scan_inbox`를 부르지 않고 감시 고리를 깨운다. 두 곳이 같은 문서를 동시에 가져오며 inbox 파일을 지우지 않게
+/// 훑기는 늘 한 스레드에서만 한다. @see docs/transfer.md "보관함 새로고침"
+#[tauri::command]
+pub async fn refresh_inbox(state: tauri::State<'_, InboxState>) -> Result<InboxRefresh, String> {
+    let Some(wake) = state.wake.clone() else {
+        return Ok(InboxRefresh::default());
+    };
+    let (reply, answer) = mpsc::channel();
+    wake.send(reply).map_err(|_| "iCloud 폴더 감시가 멈춰 있습니다. 앱을 다시 켜 주세요".to_string())?;
+    // 큰 문서를 복사하는 중이면 그 훑기가 끝난 다음 훑기까지 기다린다
+    tauri::async_runtime::spawn_blocking(move || answer.recv_timeout(Duration::from_secs(120)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|_| "iCloud 폴더를 아직 훑는 중입니다. 잠시 뒤 다시 눌러 주세요".to_string())
 }
 
 impl InboxState {
@@ -485,11 +517,17 @@ pub fn setup(app: &tauri::AppHandle, store: Arc<Store>) {
     let path = icloud_inbox_dir();
     let pending = Arc::new(AtomicU32::new(0));
     let waiting = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (wake, woken) = mpsc::channel::<mpsc::Sender<InboxRefresh>>();
+    #[cfg(target_os = "macos")]
+    let watching = path.is_some();
+    #[cfg(not(target_os = "macos"))]
+    let watching = false;
     app.manage(InboxState {
         path: path.clone(),
         pending: pending.clone(),
         waiting: waiting.clone(),
         store: store.clone(),
+        wake: watching.then_some(wake),
     });
 
     #[cfg(target_os = "macos")]
@@ -507,12 +545,16 @@ pub fn setup(app: &tauri::AppHandle, store: Arc<Store>) {
             let mut request = download_requester();
             let mut reported: HashSet<(Uuid, String)> = HashSet::new();
             let mut round: u64 = 0;
+            // ⌘R로 깨운 쪽. 이번 훑기가 끝나면 결과를 돌려준다
+            let mut asked: Vec<mpsc::Sender<InboxRefresh>> = Vec::new();
             loop {
                 let mut count = 0;
+                let mut imported = 0;
                 let mut names = Vec::new();
                 for dir in std::iter::once(inbox.clone()).chain(legacy_inbox_dir()) {
                     let scan = scan_inbox(&dir, &store, &mut request);
                     count += scan.pending;
+                    imported += scan.imported.len() as u32;
                     names.extend(scan.waiting);
                     for id in scan.imported {
                         crate::transfer::emit_library_changed(&app, id);
@@ -525,6 +567,9 @@ pub fn setup(app: &tauri::AppHandle, store: Arc<Store>) {
                     }
                 }
                 pending.store(count, Ordering::SeqCst);
+                for reply in asked.drain(..) {
+                    let _ = reply.send(InboxRefresh { available: true, imported, waiting: names.clone() });
+                }
                 if let Ok(mut slot) = waiting.lock() {
                     *slot = names;
                 }
@@ -536,10 +581,19 @@ pub fn setup(app: &tauri::AppHandle, store: Arc<Store>) {
                     }
                 }
                 round += 1;
-                std::thread::sleep(std::time::Duration::from_secs(5));
+                // 5초를 쉬되 ⌘R이 깨우면 바로 다시 훑는다
+                match woken.recv_timeout(Duration::from_secs(5)) {
+                    Ok(reply) => {
+                        asked.push(reply);
+                        asked.extend(woken.try_iter());
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    // 보내는 쪽(InboxState)이 사라졌다. 앱이 끝나는 중이니 그냥 쉰다
+                    Err(mpsc::RecvTimeoutError::Disconnected) => std::thread::sleep(Duration::from_secs(5)),
+                }
             }
         });
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = (store, pending, waiting);
+    let _ = (store, pending, waiting, woken);
 }

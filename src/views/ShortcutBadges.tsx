@@ -30,13 +30,14 @@ export function measureBadges(screen: Screen): Badge[] {
   const badges: Badge[] = [];
   document.querySelectorAll<HTMLElement>("[data-shortcut]").forEach((el, i) => {
     const command = el.dataset.shortcut;
-    const shortcut = SHORTCUTS.find((s) => s.run === command && !s.passive && availableOn(s, screen));
-    if (!shortcut) return;
+    // 같은 명령에 키가 여럿이면(⌘F와 ⌘2) 모두 보여 준다
+    const shortcuts = SHORTCUTS.filter((s) => s.run === command && !s.passive && availableOn(s, screen));
+    if (shortcuts.length === 0) return;
     const rect = el.getBoundingClientRect();
     if (!visible(el, rect)) return;
     badges.push({
       key: `${command}-${i}`,
-      label: shortcutLabel(shortcut),
+      label: shortcuts.map(shortcutLabel).join(" "),
       // 단추 왼쪽 위 모서리. 사이드바처럼 넓은 단추에서도 글자 바로 옆에 온다. 창 밖으로 나가지 않게 붙잡는다
       left: Math.min(Math.max(rect.left + 4, 4), window.innerWidth - 60),
       top: Math.max(rect.top, 12),

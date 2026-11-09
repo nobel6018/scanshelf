@@ -267,7 +267,9 @@ const REDETECT_SIDE: u32 = 2000;
 /// 2. 2000px로 줄여 문서 영역 감지(밝은 책상 위 흰 펼침에서 원본은 틀리고 줄인 쪽이 맞는 경우가 있었다)
 /// 3. 사각형 감지(테두리 직선). 펼침은 한 쪽씩 잡힌 사각형 둘을 합친다
 /// 4. 꼭짓점 하나만 틀린 테두리(문서 영역 감지 두 번과 iPhone 값)를 나머지 셋으로 고친다(`repair_one_corner`)
+///
 /// 펼침인데 세로로 긴 테두리(한 쪽만 잡힘, 왼쪽이 검은 표지일 때 흔하다)는 버린다. 한 쪽을 잃느니 사진 전체가 낫다.
+///
 /// @see docs/pipeline.md
 fn find_page_quad(image: &RgbImage, layout: PageLayout, phone: Option<Quad>) -> Option<Quad> {
     let aspect = image.height() as f64 / image.width().max(1) as f64;

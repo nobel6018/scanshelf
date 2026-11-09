@@ -15,7 +15,8 @@ export type AppCommand =
   | "reprocess"
   | "delete"
   | "openAsk"
-  | "showShortcuts";
+  | "showShortcuts"
+  | "refreshLibrary";
 
 /** 단축키가 동작하는 화면. App.tsx의 Route.view와 같다 */
 export type Screen = "library" | "document" | "search" | "settings";
@@ -54,8 +55,13 @@ export const SHORTCUTS: Shortcut[] = [
   { key: "f", mod: true, run: "search", label: "검색 화면", group: "이동", inInput: true },
   { key: "1", mod: true, run: "library", label: "보관함", group: "이동", inInput: true },
   { key: ",", mod: true, run: "settings", label: "설정", group: "이동", inInput: true },
+  // 사이드바의 보관함, 검색, 설정이 한 줄로 서 있어 ⌘1 다음 손이 ⌘2, ⌘3으로 간다. ⌘F와 ⌘,는 Mac 관례라 그대로 두고 더한다(2026-11-09 사용자 요청)
+  { key: "2", mod: true, run: "search", label: "검색 화면 (사이드바 두 번째)", group: "이동", inInput: true },
+  { key: "3", mod: true, run: "settings", label: "설정 (사이드바 세 번째)", group: "이동", inInput: true },
   { key: "j", mod: true, run: "openAsk", label: "보관함에 물어보기", group: "이동", inInput: true },
   { key: "o", mod: true, run: "import", label: "그림, PDF 가져오기", group: "파일", inInput: true },
+  // 새로고침으로 손에 익은 키. 문서 화면에서는 예전 다시 처리 키라 실수를 막으려고 여전히 쓰지 않는다
+  { key: "r", mod: true, run: "refreshLibrary", label: "새로고침 (iCloud에서 안 가져온 문서, 앱 업데이트 확인)", group: "파일", screens: ["library"], inInput: true },
   // 문서 단위 명령은 문서 화면에서만 동작한다. 보관함 화면에서는 무엇을 다시 처리하는지 알 수 없어서다.
   // 다시 처리는 ⌘R(새로고침으로 손에 익은 키)에서 ⇧⌘P(process)로 옮겼다. 실수로 누르기 쉬웠다(2026-11-08 사용자 지적)
   { key: "e", mod: true, run: "exportPdf", label: "이 문서를 PDF로 내보내기", group: "문서", screens: ["document"] },
@@ -118,7 +124,7 @@ export function availableOn(s: Shortcut, screen: Screen): boolean {
   return !s.screens || s.screens.includes(screen);
 }
 
-/** ⌘R. 웹뷰 새로고침이라 아무 일도 하지 않게 막는다(화면이 처음부터 다시 그려져 보던 쪽을 잃는다) */
+/** ⌘R. 웹뷰 새로고침은 화면이 처음부터 다시 그려져 보던 쪽을 잃으니 늘 막는다. 보관함에서는 refreshLibrary로 쓴다 */
 export function isReloadKey(e: KeyboardEvent): boolean {
   const mod = IS_MAC ? e.metaKey : e.ctrlKey;
   return mod && !e.altKey && e.key.toLowerCase() === "r";

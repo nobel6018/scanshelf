@@ -110,6 +110,7 @@ pub fn run() {
             transfer::cancel_pairing,
             transfer::remove_paired_device,
             inbox::icloud_inbox_status,
+            inbox::refresh_inbox,
             archive::document_origin,
             library::list_documents,
             library::get_document,

@@ -173,6 +173,33 @@ export default function App() {
 
   const openId = route.view === "document" ? route.id : null;
 
+  /** 보관함 ⌘R. iCloud 폴더를 지금 훑어 안 가져온 문서를 가져오고, 앱 업데이트도 확인해 한 줄로 알린다.
+   *  Wi-Fi 전송은 iPhone이 보내는 쪽이라 Mac이 당겨 올 것이 없다. @see docs/transfer.md "보관함 새로고침" */
+  const { checkQuietly } = update;
+  const refreshLibrary = useCallback(async () => {
+    setNotice({ text: "iCloud 폴더와 새 버전을 확인하는 중" });
+    const [inbox, version] = await Promise.all([
+      api.refreshInbox().catch((e: unknown) => String(e)),
+      checkQuietly(),
+    ]);
+    refresh();
+    const parts: string[] = [];
+    if (typeof inbox === "string") parts.push(inbox);
+    else if (!inbox || !inbox.available) parts.push("iCloud Drive가 꺼져 있어 iCloud 폴더는 보지 못했습니다");
+    else {
+      parts.push(inbox.imported > 0 ? `iCloud에서 문서 ${inbox.imported}개를 가져왔습니다` : "새로 가져올 문서가 없습니다");
+      if (inbox.waiting.length > 0) {
+        const names = inbox.waiting.slice(0, 2).map((w) => w.name ?? "이름 모를 문서").join(", ");
+        const more = inbox.waiting.length > 2 ? ` 외 ${inbox.waiting.length - 2}개` : "";
+        parts.push(`${names}${more}는 아직 iCloud에서 내려오는 중입니다`);
+      }
+    }
+    if (version.kind === "new") parts.push(`새 버전 ${version.version}이 있습니다`);
+    else if (version.kind === "latest") parts.push(`앱은 최신 버전(${version.current})입니다`);
+    else parts.push("업데이트는 확인하지 못했습니다");
+    setNotice({ text: parts.join(". ") });
+  }, [checkQuietly, refresh]);
+
   /** 단축키, 메뉴, 다른 화면이 보낸 명령. 열린 문서가 필요한 명령은 문서 화면에서만 동작한다 */
   const runCommand = useCallback(
     async (command: CommandName) => {
@@ -214,6 +241,8 @@ export default function App() {
           return confirmAndDelete({ id: openId, name: current?.name ?? "이 문서" }, { onDeleted, onError: setError });
         case "showShortcuts":
           return setOverlay("sticky");
+        case "refreshLibrary":
+          return refreshLibrary();
         case "openAsk":
           // 질문 창(mac-organize)이 registerCommand("openAsk")로 붙인다
           if (!runRegistered(command)) setNotice({ text: "보관함에 물어보기는 아직 준비되지 않았습니다" });
@@ -222,7 +251,7 @@ export default function App() {
           runRegistered(command);
       }
     },
-    [openId, documents, pickAndImport, scheduleRefresh, onDeleted],
+    [openId, documents, pickAndImport, scheduleRefresh, onDeleted, refreshLibrary],
   );
 
   const handleAction = useCallback(
@@ -277,8 +306,12 @@ export default function App() {
       if (e.defaultPrevented || modalOpen) return;
       if (isReloadKey(e)) {
         e.preventDefault();
-        if (screen === "document") setNotice({ text: "⌘R은 쓰지 않습니다. 다시 처리는 ⇧⌘P나 '다시 처리' 단추로 합니다" });
-        return;
+        if (screen === "document") {
+          setNotice({ text: "⌘R은 보관함에서 새로고침입니다. 이 문서를 다시 처리하려면 ⇧⌘P나 '다시 처리' 단추를 씁니다" });
+          return;
+        }
+        // 보관함은 아래에서 refreshLibrary로, 검색과 설정은 "보관함 화면에서 씁니다" 안내로 간다
+        if (!matchShortcut(e)) return;
       }
       const shortcut = matchShortcut(e);
       if (!shortcut) return;

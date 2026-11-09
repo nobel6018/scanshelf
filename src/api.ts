@@ -15,6 +15,7 @@ import type {
   ImportResult,
   QuickOpenEntry,
   InboxStatus,
+  InboxRefresh,
   DocumentOrigin,
   OcrPage,
   PairingCode,
@@ -71,6 +72,8 @@ export const api = {
   cancelPairing: () => invokeOptional<void>("cancel_pairing"),
   removePairedDevice: (deviceId: string) => invokeOptional<void>("remove_paired_device", { deviceId }),
   icloudInboxStatus: () => invokeOptional<InboxStatus>("icloud_inbox_status"),
+  /** 보관함 ⌘R. iCloud inbox를 지금 한 번 훑고 결과를 돌려준다(src-tauri/src/inbox.rs refresh_inbox) */
+  refreshInbox: () => invokeOptional<InboxRefresh>("refresh_inbox"),
   documentOrigin: (documentId: string) => invokeOptional<DocumentOrigin>("document_origin", { documentId }),
 
   // AI 정리(ai 담당, 리드가 연결)
