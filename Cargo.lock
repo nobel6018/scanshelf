@@ -4770,7 +4770,7 @@ dependencies = [
 
 [[package]]
 name = "scanshelf"
-version = "0.3.9"
+version = "0.3.10"
 dependencies = [
  "axum",
  "block2",
